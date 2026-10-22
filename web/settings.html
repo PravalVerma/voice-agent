@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Advanced Settings - Voice Calling Agent</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/shared.css?v=33">
+  <link rel="stylesheet" href="/static/call.css?v=12">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="topbar">
+      <a href="/" class="topbar-brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="1.5" y="9" width="2.4" height="6" rx="1.2" fill="currentColor"/>
+            <rect x="6.3" y="5" width="2.4" height="14" rx="1.2" fill="currentColor"/>
+            <rect x="11.1" y="2" width="2.4" height="20" rx="1.2" fill="currentColor"/>
+            <rect x="15.9" y="5" width="2.4" height="14" rx="1.2" fill="currentColor"/>
+            <rect x="20.7" y="9" width="2.4" height="6" rx="1.2" fill="currentColor"/>
+          </svg>
+        </div>
+        <div class="brand-name">Voice Agent</div>
+      </a>
+
+      <nav class="topbar-nav">
+        <a href="/" class="nav-item">&larr; Back to calls</a>
+      </nav>
+
+      <div class="topbar-actions">
+        <div class="user-chip">
+          <span id="topbar-username"></span>
+          <button id="logout-btn" class="btn" style="padding: 0.3rem 0.7rem;">Logout</button>
+        </div>
+      </div>
+    </header>
+
+    <section class="content">
+      <div class="card" style="max-width: 1100px; margin: 0 auto;">
+        <div style="padding: 1.25rem 1.25rem 0;">
+          <h2 style="margin: 0 0 1rem;">Advanced Settings</h2>
+        </div>
+        <div id="admin-panel-root"></div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/shared.js"></script>
+  <script src="/static/admin-panel.js"></script>
+</body>
+</html>

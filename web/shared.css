@@ -1,0 +1,421 @@
+:root {
+  --sidebar-bg: #16213b;
+  --sidebar-bg-active: #324876;
+  --sidebar-border: #263457;
+  --sidebar-text: #a9b7cc;
+  --sidebar-text-active: #ffffff;
+  --sidebar-sub: #6d7d9c;
+
+  --bg: #ffffff;
+  --card-bg: #ffffff;
+  --border: #e2e6f0;
+  --text: #1a1d29;
+  --text-muted: #6b7280;
+
+  --accent: #324876;
+  --accent-hover: #263a63;
+  --brand-teal: #1298a3;
+
+  --green: #16a34a;
+  --blue: #3d72b4;
+  --amber: #d97706;
+  --purple: #9333ea;
+  --red: #dc2626;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.page-shell { display: flex; flex-direction: column; min-height: 100vh; }
+
+/* ---- top bar (single-row shell: brand, per-page controls, nav + user) ---- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  padding: 0.7rem 1.75rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card-bg);
+  flex-wrap: wrap;
+}
+
+.topbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-decoration: none;
+  color: inherit;
+  flex-shrink: 0;
+}
+.brand-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.brand-icon svg { width: 100%; height: 100%; color: var(--accent); }
+.brand-name { color: var(--text); font-weight: 700; font-size: 1.05rem; line-height: 1.2; }
+.brand-sub { color: var(--text-muted); font-size: 0.7rem; }
+
+.topbar-controls {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  flex-wrap: wrap;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.topbar-nav { display: flex; align-items: center; gap: 1.1rem; margin-right: 0.25rem; }
+.nav-item {
+  color: var(--text-muted);
+  text-decoration: none;
+  font-size: 0.86rem;
+  font-weight: 600;
+  padding-bottom: 0.2rem;
+  border-bottom: 2px solid transparent;
+}
+.nav-item:hover { color: var(--text); }
+.nav-item.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* ---- chip-style form controls (label above box) ---- */
+
+.chip-select { display: flex; flex-direction: row; align-items: center; gap: 0.5rem; position: relative; }
+.chip-field-label { font-size: 0.68rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.02em; white-space: nowrap; }
+
+.chip-trigger {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 0.05rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.4rem 0.65rem;
+  background: #fff;
+  cursor: pointer;
+  min-width: 140px;
+  min-height: 44px;
+}
+.chip-trigger:disabled { color: #b0b4c0; cursor: not-allowed; }
+.chip-main { font-size: 0.88rem; font-weight: 700; color: var(--text); }
+.chip-sub { font-size: 0.7rem; color: var(--text-muted); }
+
+.chip-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.35rem;
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  left: 0;
+  z-index: 40;
+  min-width: 220px;
+  max-height: 340px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(15, 18, 30, 0.12);
+}
+.chip-list.hidden { display: none; }
+.chip-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.chip-list li:hover { background: var(--bg); }
+.chip-list li .chip-main { font-size: 0.88rem; }
+.chip-list li .chip-sub { font-size: 0.7rem; }
+.chip-list li.active { background: var(--accent); }
+.chip-list li.active .chip-main, .chip-list li.active .chip-sub { color: #fff; }
+
+/* ---- native <select> chips (Language, Gender) - same box/text treatment as .chip-trigger ---- */
+
+.native-chip {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.4rem 0.65rem;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--text);
+  background: #fff;
+  min-width: 140px;
+  height: 44px;
+  cursor: pointer;
+}
+.native-chip:disabled { color: #b0b4c0; cursor: not-allowed; }
+
+/* ---- segmented control (Language - a bar split evenly between options) ---- */
+
+.segmented {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  min-width: 140px;
+  height: 44px;
+}
+.segment {
+  flex: 1;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: #fff;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.segment:last-child { border-right: none; }
+.segment:hover:not(.active):not(:disabled) { background: #f6f7fb; }
+.segment.active { background: var(--accent); color: #fff; }
+.segment:disabled { cursor: not-allowed; }
+.segment:disabled:not(.active) { color: #b0b4c0; }
+.segment.active:disabled { background: #cfd3de; }
+
+/* ---- tabs (admin panel modal) ---- */
+
+.tabs { display: flex; gap: 0.4rem; border-bottom: 1px solid var(--border); padding: 0 1.25rem; }
+.tab-btn {
+  border: none;
+  background: none;
+  padding: 0.7rem 0.3rem;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab-btn.active { color: var(--text); border-bottom-color: var(--accent); }
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ---- language pills (bot editor - pick which language's prompt is showing) ---- */
+
+.lang-pills { display: flex; gap: 0.4rem; }
+.lang-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.35rem 0.9rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  background: #fff;
+  cursor: pointer;
+}
+.lang-pill:hover { background: #f6f7fb; }
+.lang-pill.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+/* ---- compact inline <select> (per-row bot assignment in the Users table) ---- */
+
+.table-select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.35rem 0.55rem;
+  font-size: 0.85rem;
+  background: #fff;
+  cursor: pointer;
+}
+
+/* ---- per-user bot+language assignments (Users table cell + Manage bots modal) ---- */
+
+.assigned-bots-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+
+.assigned-bots-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; }
+.assigned-bot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.88rem;
+}
+
+.assign-bot-form { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+.assign-bot-form select {
+  flex: 1;
+  min-width: 120px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+/* ---- search input (Logs page) ---- */
+
+.search-input {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.55rem 0.8rem;
+  font-size: 0.88rem;
+  min-width: 220px;
+}
+
+/* ---- language badge colors ---- */
+
+.badge.lang-en { background: #e6edf9; color: #2f5788; }
+.badge.lang-hi { background: #fff2da; color: #92620a; }
+.badge.lang-pa { background: #e6f7ee; color: #157a48; }
+.badge.lang-ta { background: #fdeaea; color: #a52a2a; }
+.badge.lang-bn { background: #f1e9fb; color: #6b3fa0; }
+
+.content { padding: 1.75rem; flex: 1; overflow-y: auto; }
+
+/* ---- shared components ---- */
+
+.card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+}
+
+.btn {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.6rem 1.1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: #fff;
+  color: var(--text);
+}
+.btn:hover { background: #f6f7fb; }
+.btn:disabled { color: #b0b4c0; cursor: not-allowed; }
+
+.btn-primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn-primary:hover { background: var(--accent-hover); }
+
+.btn-danger { background: #fff; color: var(--red); border-color: #f3c9ca; }
+.btn-danger:hover { background: #fdf1f1; }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: #eef1f8;
+  color: var(--text-muted);
+}
+.badge.admin { background: #fff2da; color: #92620a; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+thead th {
+  text-align: left;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0.7rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+tbody td { padding: 1.1rem 0.9rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+.row-actions { display: flex; flex-wrap: nowrap; gap: 0.5rem; }
+.row-actions .btn { flex-shrink: 0; }
+
+/* Fixed column widths - without this, a <td> containing a flex-wrap
+   container (row-actions, assigned-bots-badges) gets sized by the browser's
+   table auto-layout as if it always wraps, squeezing the column far
+   narrower than its content actually needs and forcing needless wraps. */
+.admin-table { table-layout: fixed; }
+.admin-table.users-table col.col-username { width: 15%; }
+.admin-table.users-table col.col-role { width: 8%; }
+.admin-table.users-table col.col-bots { width: 42%; }
+.admin-table.users-table col.col-created { width: 16%; }
+.admin-table.users-table col.col-actions { width: 19%; }
+.admin-table.bots-table col.col-name { width: 25%; }
+.admin-table.bots-table col.col-prompts { width: 35%; }
+.admin-table.bots-table col.col-created { width: 20%; }
+.admin-table.bots-table col.col-actions { width: 20%; }
+.admin-table.calllogs-table col.col-username { width: 20%; }
+.admin-table.calllogs-table col.col-when { width: 20%; }
+.admin-table.calllogs-table col.col-lang { width: 11%; }
+.admin-table.calllogs-table col.col-tier { width: 15%; }
+.admin-table.calllogs-table col.col-duration { width: 12%; }
+.admin-table.calllogs-table col.col-cost { width: 10%; }
+.admin-table.calllogs-table col.col-actions { width: 12%; }
+tbody tr:hover { background: #fafbfd; }
+
+.empty-state { color: var(--text-muted); font-size: 0.9rem; padding: 2rem 0; text-align: center; }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 18, 30, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  z-index: 50;
+}
+.modal-overlay.hidden { display: none; }
+.modal {
+  background: var(--card-bg);
+  border-radius: 14px;
+  width: 100%;
+  max-width: 640px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.modal-header h2 { margin: 0; font-size: 1.05rem; }
+.modal-body { padding: 1.25rem; overflow-y: auto; }
+.modal-close {
+  border: none;
+  background: none;
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.field { display: flex; flex-direction: column; gap: 0.3rem; margin-bottom: 0.9rem; }
+.field label { font-size: 0.82rem; font-weight: 600; color: var(--text-muted); }
+.field input, .field select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.55rem 0.7rem;
+  font-size: 0.9rem;
+}
+
+.form-error { color: var(--red); font-size: 0.85rem; margin-top: 0.4rem; }

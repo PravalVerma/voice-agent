@@ -1,0 +1,123 @@
+# Voice Calling Agent configuration.
+# Secrets (API keys) do NOT go here — they live in .env (see .env.example).
+
+[persona]
+agent_name = "Asha"
+
+# One [[languages]] entry per language the caller can pick from the dropdown.
+# default_language is used when no/an unrecognized code is sent by the client.
+# TTS voice (model tier + gender) is no longer configured here - it's chosen by
+# the caller at call time from whatever Google's API actually has for that
+# language (see app/tts_catalog.py). The system prompt is also no longer
+# per-language: it's the admin-editable base prompt (Settings page /
+# app/settings_store.py) plus a code-generated language-lock instruction.
+#
+# enabled=false languages are kept (not deleted) for languages we haven't
+# verified work well enough to offer yet - see docs/archived_language_prompts.md
+# for the full history/reasoning and their old (unreviewed) translated prompts.
+default_language = "en"
+
+[[languages]]
+code = "en"
+label = "English"
+stt_language = "en"
+
+[[languages]]
+code = "hi"
+label = "Hindi"
+stt_language = "hi"
+
+[[languages]]
+code = "pa"
+label = "Punjabi"
+stt_language = "pa"
+enabled = false  # narrowed down to English/Hindi only, per user request
+
+[[languages]]
+code = "ta"
+label = "Tamil"
+stt_language = "ta"
+enabled = false  # narrowed down to English/Hindi only, per user request
+
+[[languages]]
+code = "te"
+label = "Telugu"
+stt_language = "te"
+enabled = false  # never live-tested with real mic audio on whisper-large-v3
+
+[[languages]]
+code = "ml"
+label = "Malayalam"
+stt_language = "ml"
+enabled = false  # confirmed-broken STT regardless of model size/prompting
+
+[[languages]]
+code = "gu"
+label = "Gujarati"
+stt_language = "gu"
+enabled = false  # never live-tested with real mic audio on whisper-large-v3
+
+[[languages]]
+code = "bn"
+label = "Bengali"
+stt_language = "bn"
+enabled = false  # narrowed down to English/Hindi only, per user request
+
+[vad]
+threshold = 0.5              # speech-start probability threshold
+end_threshold = 0.35         # speech-end probability threshold (hysteresis)
+silence_ms = 600             # silence needed to consider the utterance finished (try 500-800)
+min_speech_ms = 120          # minimum voiced duration to count as speech (filters clicks)
+pre_roll_ms = 300            # audio kept from before speech onset so first syllables aren't clipped
+max_utterance_s = 20         # force end-of-utterance after this long
+barge_in_min_speech_ms = 200 # stricter gate while the agent is speaking (echo protection)
+barge_in_threshold = 0.6
+
+[stt]
+provider = "groq"            # groq | local
+model = "whisper-large-v3"    # full model, not turbo - more accurate on Indic languages, ~2.8x pricier ($0.111/hr vs $0.04/hr) but still a tiny fraction of per-call cost
+
+[llm]
+# model must match provider - examples: groq "openai/gpt-oss-20b", ollama "llama3.2",
+# openai "gpt-4o-mini" (needs `uv sync --extra openai`), gemini "gemini-2.0-flash"
+provider = "groq"            # groq | ollama | openai | gemini
+model = "openai/gpt-oss-20b"
+max_tokens = 400             # short answers: better latency, cost, and phone-call feel
+                              # (was 200 -> 500 -> 700, raised each time because Indic replies were
+                              # being cut off mid-sentence; gpt-oss counts its reasoning tokens
+                              # against this cap too, which is why the visible replies looked far
+                              # shorter than the limit that truncated them)
+                              #
+                              # Back down to 400 because Groq reserves the FULL max_tokens against
+                              # the per-minute rate limit, whether or not it gets used: at 700 every
+                              # Hindi turn cost ~4,100 TPM for a reply that measured 50-193 tokens.
+                              # 400 was picked off 11 probes across the longest stages and the most
+                              # reasoning-heavy caller inputs - worst case 193 tokens, all finishing
+                              # naturally - so it keeps ~2x headroom over anything observed. If
+                              # mid-sentence cut-offs ever reappear in an Indic language, raise this
+                              # first before suspecting anything else.
+temperature = 0.6
+history_max_turns = 12       # user+assistant messages kept in context (system prompt always kept)
+
+[tts]
+provider = "google"          # google
+# no static "voice" here anymore - it's resolved per call from the caller's
+# language/tier/gender choice against the live Google voice catalog
+speaking_rate = 1.0
+sample_rate = 24000
+
+[call]
+max_call_minutes = 10
+log_dir = "logs/calls"
+dump_utterances = false      # debug: save each captured user utterance as a WAV in the call log dir
+record_calls = true          # save a mono mixdown of each call as recording.wav in its log dir, and
+                             # archive it to S3 when S3_RECORDINGS_BUCKET is set in .env (see s3_archive.py)
+
+[cost]                       # rates from the design PDF, used for the per-call estimate
+usd_to_inr = 96.4            # checked 2026-07-20 - was stale at 88.0, real rate had moved ~9.5%
+stt_usd_per_hour = 0.111     # Groq whisper-large-v3 (full model), billed minimum 10 s per request
+llm_usd_per_mtok_in = 0.075  # Groq openai/gpt-oss-20b
+llm_usd_per_mtok_out = 0.30
+tts_usd_per_mchar = 16.0     # fallback only (WaveNet rate) - apply_language() overwrites this
+                              # per call with the real rate for whichever tier the caller picked
+                              # (see app/tts_catalog.py: Standard 4.0, Wavenet/Neural2 16.0, Chirp3-HD 30.0)

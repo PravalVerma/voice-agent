@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login - Voice Calling Agent</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="stylesheet" href="/static/shared.css?v=33">
+  <link rel="stylesheet" href="/static/call.css?v=12">
+  <style>
+    html, body { height: 100%; }
+    body {
+      display: flex;
+      background: #fff;
+    }
+
+    /* ---- left: the actual sign-in form ---- */
+    .login-left {
+      flex: 1 1 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .login-form-wrap { width: 100%; max-width: 360px; text-align: center; }
+    .login-form-wrap .brand-icon { width: 40px; height: 40px; margin: 0 auto 1rem; }
+    .login-form-wrap h1 { font-size: 1.4rem; margin: 0 0 0.4rem; }
+    .login-subtitle { color: var(--text-muted); font-size: 0.9rem; margin: 0 0 1.75rem; }
+    .login-form-wrap .field { text-align: left; }
+    .login-input-wrap { position: relative; display: flex; align-items: center; }
+    .login-input-wrap svg { position: absolute; left: 0.75rem; width: 16px; height: 16px; color: var(--text-muted); pointer-events: none; }
+    .login-input-wrap input { padding-left: 2.35rem; padding-right: 2.35rem; width: 100%; }
+    .password-toggle {
+      position: absolute;
+      right: 0.65rem;
+      border: none;
+      background: none;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      color: var(--text-muted);
+    }
+    .password-toggle svg { position: static; width: 17px; height: 17px; }
+    .login-remember {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0.2rem 0 1.25rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      cursor: pointer;
+    }
+    .login-remember input { cursor: pointer; }
+    .login-submit { width: 100%; }
+
+    /* ---- right: brand panel with a live-call preview ---- */
+    .login-right {
+      flex: 1 1 50%;
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem;
+      background: linear-gradient(135deg, #eef2ff 0%, #e0f2fe 100%);
+    }
+    .login-right::before, .login-right::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(70px);
+      pointer-events: none;
+    }
+    .login-right::before { width: 380px; height: 380px; top: -120px; left: -120px; background: #c7d2fe; opacity: 0.55; }
+    .login-right::after { width: 340px; height: 340px; bottom: -140px; right: -100px; background: #a7f3d0; opacity: 0.45; }
+
+    .login-right-content { position: relative; z-index: 1; display: flex; flex-direction: column; align-items: center; gap: 2rem; max-width: 380px; width: 100%; }
+    .login-tagline { margin: 0; font-size: 2rem; font-weight: 700; text-align: center; line-height: 1.25; }
+    .login-tagline .accent { color: var(--accent); }
+
+    /* the actual Live Call card from the app, reused verbatim (call.css
+       classes) as a static, non-interactive preview - disabled controls, no
+       JS wired up, just the real UI so this is honest about what the product
+       looks like rather than a generic stock mockup */
+    .login-preview-card {
+      width: 100%;
+      background: #fff;
+      border-radius: 14px;
+      box-shadow: 0 20px 45px rgba(30, 41, 90, 0.14);
+      padding: 1.25rem 1.25rem 1.5rem;
+    }
+    .login-preview-card .hero-circle { width: 130px; height: 130px; }
+    .login-preview-card .live-call-hint { margin: 0 0 1.1rem; }
+    .login-preview-card .call-controls { pointer-events: none; }
+
+    @media (max-width: 860px) {
+      .login-right { display: none; }
+      .login-left { flex: 1 1 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-left">
+    <div class="login-form-wrap">
+      <div class="brand-icon">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="1.5" y="9" width="2.4" height="6" rx="1.2" fill="currentColor"/>
+          <rect x="6.3" y="5" width="2.4" height="14" rx="1.2" fill="currentColor"/>
+          <rect x="11.1" y="2" width="2.4" height="20" rx="1.2" fill="currentColor"/>
+          <rect x="15.9" y="5" width="2.4" height="14" rx="1.2" fill="currentColor"/>
+          <rect x="20.7" y="9" width="2.4" height="6" rx="1.2" fill="currentColor"/>
+        </svg>
+      </div>
+      <h1>Welcome to Voice Agent</h1>
+      <p class="login-subtitle">Sign in to your account to continue</p>
+      <form id="login-form">
+        <div class="field">
+          <label for="username">Username</label>
+          <div class="login-input-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+            <input id="username" name="username" type="text" autocomplete="username" placeholder="Username" required>
+          </div>
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <div class="login-input-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <input id="password" name="password" type="password" autocomplete="current-password" placeholder="Password" required>
+            <button type="button" class="password-toggle" id="password-toggle" aria-label="Show password">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+        </div>
+        <label class="login-remember">
+          <input type="checkbox" id="remember" checked>
+          Stay logged in
+        </label>
+        <p id="login-error" class="form-error" style="display: none;"></p>
+        <button type="submit" class="btn btn-primary login-submit" id="login-submit">Sign in</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="login-right">
+    <div class="login-right-content">
+      <div class="login-preview-card">
+        <div class="panel-header">
+          <span class="panel-header-title"><span class="panel-dot"></span> Live Call</span>
+          <span class="connection-badge"><span>Not Connected</span></span>
+        </div>
+        <div class="live-call-body">
+          <div class="hero-circle" data-state="idle">
+            <div class="waveform">
+              <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+            </div>
+          </div>
+          <p class="live-call-hint">Press &ldquo;Start New Session&rdquo; and speak.<br>The conversation will appear here.</p>
+          <div class="call-controls">
+            <div class="control">
+              <button class="round-btn round-btn-muted" disabled aria-hidden="true" tabindex="-1">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <line x1="1" y1="1" x2="23" y2="23"></line>
+                  <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"></path>
+                  <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"></path>
+                  <line x1="12" y1="19" x2="12" y2="23"></line>
+                  <line x1="8" y1="23" x2="16" y2="23"></line>
+                </svg>
+              </button>
+              <span class="control-label">Mute</span>
+            </div>
+            <div class="control">
+              <button class="round-btn round-btn-primary" disabled aria-hidden="true" tabindex="-1">
+                <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                  <path d="M12 15a3.5 3.5 0 0 0 3.5-3.5v-5A3.5 3.5 0 0 0 8.5 6.5v5A3.5 3.5 0 0 0 12 15z" fill="currentColor"/>
+                  <path d="M6 11.5a1 1 0 1 0-2 0 8 8 0 0 0 7 7.94V21H9a1 1 0 1 0 0 2h6a1 1 0 1 0 0-2h-2v-1.56a8 8 0 0 0 7-7.94 1 1 0 1 0-2 0 6 6 0 0 1-12 0z" fill="currentColor"/>
+                </svg>
+              </button>
+              <span class="control-label">Start Call</span>
+            </div>
+            <div class="control">
+              <button class="round-btn round-btn-danger" disabled aria-hidden="true" tabindex="-1">
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                  <path d="M6.6 10.8c1.5 3 4.2 5.7 7.2 7.2l2.4-2.4c.3-.3.7-.4 1.1-.3 1.2.4 2.5.6 3.8.6.6 0 1 .4 1 1V21c0 .6-.4 1-1 1C10.6 22 2 13.4 2 3c0-.6.4-1 1-1h4.1c.6 0 1 .4 1 1 0 1.3.2 2.6.6 3.8.1.4 0 .8-.3 1.1L6.6 10.8z" transform="rotate(135 12 12)"/>
+                </svg>
+              </button>
+              <span class="control-label">End Call</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/login.js"></script>
+</body>
+</html>
