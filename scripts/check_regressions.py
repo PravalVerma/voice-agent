@@ -16,12 +16,18 @@ import json
 import re
 import shutil
 import sys
+import tempfile
+
+from pathlib import Path
 
 from _bootstrap import load_config_or_die
+
+from app import tts_cache
 
 from app.providers.base import Done, TextDelta, ToolCall
 from app.transport.base import AudioTransport
 
+VERBOSE = False
 _RESULTS: list[tuple[bool, str, str]] = []
 
 #: a short run of silence, long enough to clear the minimum-utterance check
@@ -406,8 +412,28 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--verbose", action="store_true", help="show detail for passing checks too")
     args = parser.parse_args()
+    global VERBOSE
+    VERBOSE = args.verbose
 
     cfg = load_config_or_die()
+
+    # These checks drive real CallSessions, so without redirection they write
+    # into live state: scripted lines go through the real tts_cache, and every
+    # session opens a real directory under logs/calls. The fake TTS returns
+    # silence and the fake config never resolves a voice, so the cache entries
+    # are silent audio filed under whatever voice name happened to be the
+    # default - a file a real call could later serve instead of the line - and
+    # the log directories are indistinguishable from real calls in the admin
+    # Call Logs page. Both go to a throwaway directory for the duration.
+    with tempfile.TemporaryDirectory(prefix="vca-regress-") as tmp:
+        tts_cache.CACHE_DIR = Path(tmp) / "cache"
+        cfg = cfg.model_copy(
+            update={"call": cfg.call.model_copy(update={"log_dir": str(Path(tmp) / "calls")})}
+        )
+        _run_checks(cfg)
+
+
+def _run_checks(cfg) -> None:
     for fn in (
         check_toml_control_chars,
         check_devanagari_tokens,
@@ -427,7 +453,7 @@ def main() -> None:
 
     failed = 0
     for passed, name, detail in _RESULTS:
-        if passed and not args.verbose:
+        if passed and not VERBOSE:
             print(f"  ok   {name}")
         elif passed:
             print(f"  ok   {name}  {detail}")
