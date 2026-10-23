@@ -328,3 +328,42 @@ close = "आपके समय के लिए धन्यवाद। नम
 tool_filler = "एक मिनट, मैं अभी check करती हूँ।"
 tool_failed = "मैं अभी यह check नहीं कर पा रही हूँ, लेकिन मैंने note कर लिया है।"
 tool_done = "यह record हो गया है, धन्यवाद।"
+
+[llm_post]
+# Post-call work: a summary and a compliance audit, after the call has ended.
+# Deliberately a separate section from [llm] so these can point at a different
+# key or model and never compete with a live call for the in-call budget.
+#
+# Note what does NOT run here. Four of the five audit checks - missing
+# disclosure, threat language, calling outside the window, and spoken figures
+# that do not match the account - are deterministic and run locally on every
+# call for free. Only third-party disclosure needs judgement, so only that is
+# sent to a model. That is also why "batch several calls per request" is the
+# wrong instinct at these limits: one six-minute transcript is already 1,500 to
+# 3,500 tokens, so the token ceiling binds long before the request ceiling does.
+enabled = true
+provider = "groq"            # must be a provider from the [llm] table
+model = "openai/gpt-oss-20b"
+in_process = true            # false -> run scripts/run_post_jobs.py --once on a schedule
+poll_seconds = 60
+settle_seconds = 30          # leave a call alone this long after it ends, so its
+                              # recording has finished being written
+max_attempts = 3             # then mark the job errored; without a cap one malformed
+                              # transcript retries forever and spends the daily quota
+rpm = 3
+tpm = 2000                   # the binding constraint, always
+batch_token_budget = 1800    # 90% of tpm, leaving room for estimate error
+
+[retention]
+# Destructive and irreversible, so it ships off. Run
+# scripts/check_retention.py --dry-run first to see exactly what would go.
+#
+# Audio and record are separate on purpose. The directive behind the six-month
+# figure requires recovery calls to be DOCUMENTED - timing, frequency, content
+# - so deleting the transcript at six months would destroy the very evidence it
+# asks for. The audio is the part that ages out; the record outlives it by
+# years, and a deleted recording leaves a marker behind rather than silently
+# looking like a call that was never recorded.
+enabled = false
+recording_keep_days = 180    # recording.wav, and its S3 copy
+record_keep_days = 2555      # ~7 years: transcript.jsonl and meta.json

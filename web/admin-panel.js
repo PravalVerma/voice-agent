@@ -86,6 +86,19 @@ function formatUserDate(text) {
                 <button id="bot-editor-save-name" class="btn">Rename</button>
               </div>
             </div>
+            <div class="field">
+              <label for="bot-editor-mode">Mode</label>
+              <select id="bot-editor-mode">
+                <option value="assistant">Assistant - open conversation</option>
+                <option value="collections">Collections - scripted stages, compliance checks, tools</option>
+              </select>
+              <p id="bot-editor-mode-hint" style="margin:0.4rem 0 0; color: var(--text-muted); font-size: 0.82rem;"></p>
+            </div>
+            <div class="field" id="bot-editor-tools-field" style="display:none;">
+              <label>Allowed actions</label>
+              <div class="lang-pills" id="bot-editor-tools"></div>
+              <p id="bot-editor-tools-hint" style="margin:0.4rem 0 0; color: var(--text-muted); font-size: 0.82rem;"></p>
+            </div>
             <div class="lang-pills" id="bot-editor-langs"></div>
             <p style="margin: 0.6rem 0 1rem; color: var(--text-muted); font-size: 0.85rem;">
               This is the persona/behavior instructions given to the agent for the
@@ -115,10 +128,11 @@ function formatUserDate(text) {
             <table class="admin-table calllogs-table">
               <colgroup>
                 <col class="col-username"><col class="col-when"><col class="col-lang">
-                <col class="col-tier"><col class="col-duration"><col class="col-cost"><col class="col-actions">
+                <col class="col-tier"><col class="col-duration"><col class="col-cost">
+                <col class="col-review"><col class="col-recording"><col class="col-actions">
               </colgroup>
               <thead>
-                <tr><th>User</th><th>When</th><th>Language</th><th>Voice Quality</th><th>Duration</th><th>Cost</th><th>Recording</th><th>Actions</th></tr>
+                <tr><th>User</th><th>When</th><th>Language</th><th>Voice Quality</th><th>Duration</th><th>Cost</th><th>Review</th><th>Recording</th><th>Actions</th></tr>
               </thead>
               <tbody id="admin-calllogs-body"></tbody>
             </table>
@@ -575,6 +589,12 @@ function formatUserDate(text) {
   const botEditorStatus = document.getElementById("bot-editor-status");
   const botEditorError = document.getElementById("bot-editor-error");
 
+  const botEditorMode = document.getElementById("bot-editor-mode");
+  const botEditorModeHint = document.getElementById("bot-editor-mode-hint");
+  const botEditorToolsField = document.getElementById("bot-editor-tools-field");
+  const botEditorTools = document.getElementById("bot-editor-tools");
+  const botEditorToolsHint = document.getElementById("bot-editor-tools-hint");
+  let availableTools = [];
   let enabledLanguages = [];
   let allBots = [];
   let currentBotDetail = null;
@@ -654,6 +674,107 @@ function formatUserDate(text) {
     }
   }
 
+  async function loadAvailableTools() {
+    if (availableTools.length) return;
+    try {
+      availableTools = await fetchJSON("/api/tools");
+    } catch (err) {
+      availableTools = [];
+    }
+  }
+
+  // Mirrors buildTierPills: the collector hangs off the node, and null (rather
+  // than a full list) means "everything allowed", so an action added later is
+  // permitted automatically instead of being silently excluded because it
+  // postdates when this was saved.
+  function renderToolPills(allowed) {
+    botEditorTools.innerHTML = "";
+    if (!availableTools.length) {
+      botEditorToolsHint.textContent =
+        "No actions are available right now, so this bot can talk but cannot act.";
+      return;
+    }
+    for (const tool of availableTools) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "lang-pill";
+      btn.textContent = tool.name.replace(/_/g, " ");
+      btn.title = tool.description || "";
+      btn.dataset.tool = tool.name;
+      btn.classList.toggle("active", !allowed || allowed.includes(tool.name));
+      btn.addEventListener("click", () => {
+        btn.classList.toggle("active");
+        saveBotTools();
+      });
+      botEditorTools.appendChild(btn);
+    }
+    updateToolsHint(allowed);
+  }
+
+  function collectAllowedTools() {
+    const pills = [...botEditorTools.querySelectorAll(".lang-pill")];
+    if (!pills.length) return null;
+    const on = pills.filter((b) => b.classList.contains("active")).map((b) => b.dataset.tool);
+    return on.length === pills.length ? null : on;
+  }
+
+  function updateToolsHint(allowed) {
+    if (!allowed) {
+      botEditorToolsHint.innerHTML =
+        '<span style="color: var(--red);">⚠ Unrestricted - every action is allowed</span>';
+    } else {
+      botEditorToolsHint.textContent = `${allowed.length} of ${availableTools.length} actions allowed`;
+    }
+  }
+
+  async function saveBotTools() {
+    if (!currentBotDetail) return;
+    const allowed = collectAllowedTools();
+    if (allowed && allowed.length === 0) {
+      // An empty selection would leave an agent that talks but never acts.
+      // Treat it as the slip it almost always is and restore the pills.
+      alert("A collections bot needs at least one action. Leave them all on to allow everything.");
+      renderToolPills(currentBotDetail.allowed_tools);
+      return;
+    }
+    try {
+      await fetchJSON(`/api/bots/${currentBotDetail.id}/tools`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ allowed_tools: allowed }),
+      });
+      currentBotDetail.allowed_tools = allowed;
+      updateToolsHint(allowed);
+    } catch (err) {
+      alert("failed to save actions: " + err.message);
+    }
+  }
+
+  function applyBotMode(mode) {
+    const collections = mode === "collections";
+    botEditorToolsField.style.display = collections ? "" : "none";
+    botEditorModeHint.textContent = collections
+      ? "Calls open with the recorded-call disclosure, verify identity before discussing the account, and have every spoken figure checked against the account. Pick an account on the call page."
+      : "Open conversation, exactly as before. No scripted stages, no compliance checks, no actions.";
+  }
+
+  botEditorMode.addEventListener("change", async () => {
+    if (!currentBotDetail) return;
+    const mode = botEditorMode.value;
+    try {
+      await fetchJSON(`/api/bots/${currentBotDetail.id}/mode`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode }),
+      });
+      currentBotDetail.mode = mode;
+      applyBotMode(mode);
+    } catch (err) {
+      alert("failed to change mode: " + err.message);
+      botEditorMode.value = currentBotDetail.mode;
+    }
+  });
+
   async function openBotEditor(botId) {
     botEditorError.style.display = "none";
     botEditorStatus.style.display = "none";
@@ -665,6 +786,10 @@ function formatUserDate(text) {
       return;
     }
     botEditorNameInput.value = currentBotDetail.name;
+    await loadAvailableTools();
+    botEditorMode.value = currentBotDetail.mode || "assistant";
+    applyBotMode(botEditorMode.value);
+    renderToolPills(currentBotDetail.allowed_tools);
     renderLangPills();
     selectEditorLang(enabledLanguages[0] ? enabledLanguages[0].code : null);
     botEditor.style.display = "block";
@@ -803,6 +928,90 @@ function formatUserDate(text) {
     return link;
   }
 
+  function reviewCell(c) {
+    // A refused call never happened, so it is not "clean" - it is a decision,
+    // and that is the more useful thing to show at a glance.
+    if (c.refused) return '<span class="badge sev-med">refused</span>';
+    if (!c.flag_count) return "—";
+    const sev = c.max_severity || "low";
+    const n = c.flag_count;
+    return `<span class="badge sev-${sev}">${n} flagged</span>`;
+  }
+
+  function renderTranscriptEntry(msg) {
+    const kind = msg.kind || msg.role;
+
+    if (kind === "stage") {
+      const div = document.createElement("div");
+      div.className = "stage-divider";
+      div.textContent = msg.reason ? `${msg.stage} - ${msg.reason}` : msg.stage;
+      return div;
+    }
+
+    if (kind === "tool") {
+      const div = document.createElement("div");
+      div.className = "msg tool";
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = "Action";
+      div.appendChild(who);
+      const args = Object.entries(msg.args || {})
+        .map(([k, v]) => `${k}=${v}`).join(", ");
+      div.appendChild(document.createTextNode(`${msg.name}(${args})`));
+      if (msg.ok !== null && msg.ok !== undefined) {
+        const tag = document.createElement("span");
+        tag.className = "badge " + (msg.ok ? "tool-ok" : "sev-high");
+        tag.textContent = msg.ok ? "done" : (msg.result || "failed");
+        div.appendChild(tag);
+      }
+      return div;
+    }
+
+    if (kind === "blocked") {
+      const div = document.createElement("div");
+      div.className = "msg blocked";
+      const who = document.createElement("span");
+      who.className = "who";
+      who.textContent = `Blocked - ${msg.detail || msg.code}`;
+      div.appendChild(who);
+      // verbatim, deliberately: the point of the record is what was almost said
+      div.appendChild(document.createTextNode(msg.text || ""));
+      return div;
+    }
+
+    if (kind === "flag") {
+      const div = document.createElement("div");
+      div.className = "msg flag";
+      const tag = document.createElement("span");
+      tag.className = `badge sev-${msg.severity || "low"}`;
+      tag.textContent = (msg.code || "").replace(/_/g, " ");
+      div.appendChild(tag);
+      div.appendChild(document.createTextNode(" " + (msg.detail || msg.evidence || "")));
+      return div;
+    }
+
+    const div = document.createElement("div");
+    div.className = `msg ${msg.role || "agent"}` + (msg.interrupted ? " interrupted" : "");
+    const who = document.createElement("span");
+    who.className = "who";
+    who.textContent = msg.role === "user" ? "Caller" : "Agent";
+    div.appendChild(who);
+    div.appendChild(document.createTextNode(msg.text || ""));
+    if (msg.scripted) {
+      const tag = document.createElement("span");
+      tag.className = "badge scripted-tag";
+      tag.textContent = "Scripted";
+      div.appendChild(tag);
+    }
+    if (msg.interrupted) {
+      const tag = document.createElement("span");
+      tag.className = "badge interrupted-tag";
+      tag.textContent = "Interrupted";
+      div.appendChild(tag);
+    }
+    return div;
+  }
+
   function renderCallLogRow(c) {
     const tr = document.createElement("tr");
     tr.innerHTML = `
@@ -812,6 +1021,7 @@ function formatUserDate(text) {
       <td>${adminEscapeHtml(c.tts_tier || "—")}</td>
       <td>${c.complete ? formatDuration(c.duration_s) : "in progress"}</td>
       <td>${c.complete ? formatCost(c.cost_inr) : "—"}</td>
+      <td>${reviewCell(c)}</td>
       <td class="calllog-recording"></td>
       <td><div class="row-actions"></div></td>
     `;
@@ -832,7 +1042,7 @@ function formatUserDate(text) {
       callLogsEmpty.style.display = logs.length ? "none" : "block";
       for (const c of logs) callLogsBody.appendChild(renderCallLogRow(c));
     } catch (err) {
-      callLogsBody.innerHTML = `<tr><td colspan="8" class="form-error">failed to load call logs: ${err.message}</td></tr>`;
+      callLogsBody.innerHTML = `<tr><td colspan="9" class="form-error">failed to load call logs: ${err.message}</td></tr>`;
     }
   }
 
@@ -849,7 +1059,30 @@ function formatUserDate(text) {
         detail.tts_tier || "—",
         detail.complete ? `${formatDuration(detail.duration_s)} · ${formatCost(detail.cost_inr)}` : "call still in progress",
       ];
+      if (detail.disposition) parts.push(`outcome: ${detail.disposition.replace(/_/g, " ")}`);
       callLogDetailMeta.textContent = parts.join(" · ");
+
+      if (detail.refused) {
+        const banner = document.createElement("div");
+        banner.className = "review-banner sev-high";
+        banner.textContent = `Call refused before dialling - ${detail.refused.detail || detail.refused.code}`;
+        callLogDetailTranscript.appendChild(banner);
+      }
+      if (detail.summary_text) {
+        const box = document.createElement("div");
+        box.className = "review-banner";
+        box.textContent = detail.summary_text;
+        callLogDetailTranscript.appendChild(box);
+      }
+      for (const f of detail.flags || []) {
+        const row = document.createElement("div");
+        row.className = `review-banner sev-${f.severity || "low"}`;
+        const label = (f.code || "").replace(/_/g, " ");
+        row.textContent = f.evidence
+          ? `${label}: ${f.detail || ""} — "${f.evidence}"`
+          : `${label}: ${f.detail || ""}`;
+        callLogDetailTranscript.appendChild(row);
+      }
       if (detail.has_recording) {
         const player = document.createElement("audio");
         player.controls = true;
@@ -867,20 +1100,11 @@ function formatUserDate(text) {
         return;
       }
       for (const msg of detail.transcript) {
-        const div = document.createElement("div");
-        div.className = `msg ${msg.role}` + (msg.interrupted ? " interrupted" : "");
-        const who = document.createElement("span");
-        who.className = "who";
-        who.textContent = msg.role === "user" ? "Caller" : "Agent";
-        div.appendChild(who);
-        div.appendChild(document.createTextNode(msg.text));
-        if (msg.interrupted) {
-          const tag = document.createElement("span");
-          tag.className = "badge interrupted-tag";
-          tag.textContent = "Interrupted";
-          div.appendChild(tag);
-        }
-        callLogDetailTranscript.appendChild(div);
+        // Switch on `kind`, not `role`: a tool call, a blocked reply and a
+        // stage change are not speakers. Anything unrecognised falls through
+        // to the speech rendering, so a log written by an older build - which
+        // carries `role` but no `kind` - still displays.
+        callLogDetailTranscript.appendChild(renderTranscriptEntry(msg));
       }
     } catch (err) {
       callLogDetailMeta.textContent = "";

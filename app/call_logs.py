@@ -49,6 +49,19 @@ def _read_last_event(transcript_path: Path) -> dict | None:
         return None
 
 
+_SEVERITY_ORDER = {"low": 1, "medium": 2, "high": 3}
+
+
+def _audit_flags(meta: dict) -> list[dict]:
+    return ((meta.get("post") or {}).get("audit") or {}).get("flags") or []
+
+
+def _max_severity(flags: list[dict]) -> str | None:
+    if not flags:
+        return None
+    return max((f.get("severity", "low") for f in flags), key=lambda s: _SEVERITY_ORDER.get(s, 0))
+
+
 def _summarize(dir_path: Path) -> dict | None:
     transcript_path = dir_path / "transcript.jsonl"
     meta_path = dir_path / "meta.json"
@@ -87,6 +100,8 @@ def _summarize(dir_path: Path) -> dict | None:
             # was placed - see calllog.log_refusal
             "refused": meta.get("refused"),
             "customer_id": meta.get("customer_id"),
+            "flag_count": len(_audit_flags(meta)),
+            "max_severity": _max_severity(_audit_flags(meta)),
         }
 
     # no meta.json - the process died/restarted mid-call (see CallLogger)
@@ -115,6 +130,8 @@ def _summarize(dir_path: Path) -> dict | None:
         "recording_s3_key": None,
         "refused": None,
         "customer_id": None,
+        "flag_count": 0,
+        "max_severity": None,
     }
 
 
@@ -132,13 +149,46 @@ def list_call_logs(limit: int = 200) -> list[dict]:
     return out
 
 
+#: Tool arguments that may be rendered. DEFAULT-DENY: anything not listed here
+#: shows as a placeholder, so a tool added later is private until someone opts
+#: its arguments in. verify_identity's `answer` is the identity secret and
+#: send_payment_link's resolved phone is personal data; neither may ever appear
+#: on a screen that is open to every admin.
+_RENDERABLE_TOOL_ARGS = {
+    "record_promise_to_pay": {"date", "amount_rupees"},
+    "schedule_callback": {"datetime"},
+    "log_dispute": {"reason"},
+    "end_call": {"disposition"},
+    "transfer_to_human": {"reason"},
+    "verify_identity": set(),
+    "register_opt_out": set(),
+    "send_payment_link": set(),
+}
+
+
+def _redact_args(name: str, args: dict) -> dict:
+    allowed = _RENDERABLE_TOOL_ARGS.get(name)
+    if allowed is None:
+        return {k: "•••" for k in (args or {})}
+    return {k: (v if k in allowed else "•••") for k, v in (args or {}).items()}
+
+
 def _parse_transcript(transcript_path: Path) -> list[dict]:
-    """Turns raw per-event JSONL into the same shape the live call's transcript
-    panel shows: one entry per user utterance, one per agent turn (with any
-    agent_turn text fragments for that turn_id joined together), tagged
-    interrupted if a barge_in event landed on that turn_id."""
+    """Turns raw per-event JSONL into the shape the transcript panel renders.
+
+    Every entry carries a `kind`, which is the real discriminator; `role` is
+    kept alongside it for the two original kinds so nothing downstream that
+    reads `role` breaks. Entries that are not speech at all - a tool call, a
+    blocked reply, a stage change - are not speakers, which is why `role` alone
+    could never describe them.
+
+    prompt_tokens is deliberately NOT turned into an entry. It is telemetry,
+    and putting it in the ordered conversation fills the panel with noise; it
+    belongs in meta.json alongside the other token counts.
+    """
     order: list[dict] = []
     by_turn: dict[int, dict] = {}
+    by_call: dict[str, dict] = {}
     for line in transcript_path.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
@@ -149,19 +199,55 @@ def _parse_transcript(transcript_path: Path) -> list[dict]:
             continue
         rec_type = rec.get("type")
         if rec_type == "user_utterance":
-            order.append({"role": "user", "text": rec.get("text", ""), "t": rec.get("t")})
+            order.append({"kind": "user", "role": "user",
+                          "text": rec.get("text", ""), "t": rec.get("t")})
         elif rec_type == "agent_turn":
             turn_id = rec.get("turn_id")
             entry = by_turn.get(turn_id)
             if entry is None:
-                entry = {"role": "agent", "turn_id": turn_id, "text": "", "t": rec.get("t"), "interrupted": False}
+                entry = {"kind": "agent", "role": "agent", "turn_id": turn_id, "text": "",
+                         "t": rec.get("t"), "interrupted": False,
+                         "scripted": bool(rec.get("scripted")), "stage": rec.get("stage")}
                 by_turn[turn_id] = entry
                 order.append(entry)
             entry["text"] += rec.get("text", "")
+            if rec.get("blocked"):
+                entry["blocked"] = True
         elif rec_type == "barge_in":
             entry = by_turn.get(rec.get("turn_id"))
             if entry is not None:
                 entry["interrupted"] = True
+        elif rec_type == "stage_transition":
+            order.append({"kind": "stage", "role": "agent", "stage": rec.get("to"),
+                          "reason": rec.get("reason", ""), "t": rec.get("t")})
+        elif rec_type == "tool_call":
+            entry = {"kind": "tool", "role": "agent", "name": rec.get("name", ""),
+                     "args": _redact_args(rec.get("name", ""), rec.get("args") or {}),
+                     "ok": None, "result": None, "t": rec.get("t")}
+            call_id = rec.get("call_id")
+            if call_id:
+                by_call[call_id] = entry
+            order.append(entry)
+        elif rec_type == "tool_result":
+            entry = by_call.get(rec.get("call_id"))
+            if entry is None:
+                # the matching call is missing (a truncated log, or a result
+                # that arrived after a barge-in) - show it rather than drop it
+                entry = {"kind": "tool", "role": "agent", "name": rec.get("name", ""),
+                         "args": {}, "t": rec.get("t")}
+                order.append(entry)
+            entry["ok"] = bool(rec.get("ok", True))
+            result = rec.get("result") or {}
+            entry["result"] = result.get("error") or "ok"
+        elif rec_type == "blocked_output":
+            order.append({"kind": "blocked", "role": "agent", "text": rec.get("text", ""),
+                          "code": rec.get("code", ""), "detail": rec.get("detail", ""),
+                          "t": rec.get("t")})
+        elif rec_type == "compliance_flag":
+            order.append({"kind": "flag", "role": "agent", "code": rec.get("code", ""),
+                          "severity": rec.get("severity", "low"),
+                          "detail": rec.get("detail", ""),
+                          "evidence": rec.get("evidence", ""), "t": rec.get("t")})
     return order
 
 
@@ -196,4 +282,18 @@ def get_call_log(dir_name: str) -> dict | None:
         return None
     transcript_path = dir_path / "transcript.jsonl"
     summary["transcript"] = _parse_transcript(transcript_path) if transcript_path.exists() else []
+    # the post-call results live in meta.json, not the transcript
+    meta = {}
+    meta_path = dir_path / "meta.json"
+    if meta_path.is_file():
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            meta = {}
+    post = meta.get("post") or {}
+    summary["flags"] = _audit_flags(meta)
+    summary["review_status"] = (post.get("audit") or {}).get("status")
+    summary["summary_text"] = (post.get("summary") or {}).get("text")
+    summary["disposition"] = (post.get("summary") or {}).get("disposition")
+    summary["refused"] = meta.get("refused")
     return summary

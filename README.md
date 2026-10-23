@@ -97,6 +97,36 @@ the whole call to the Gemini Live pipeline instead:
 An admin can restrict which tiers a given user is allowed to pick, per bot
 assignment, from Advanced Settings → Users.
 
+## Collections mode
+
+A bot can be switched from **Assistant** (the default, unchanged) to
+**Collections** in Advanced Settings -> Bots. A collections call is placed
+against a borrower record picked on the call page, and behaves differently in
+ways that are enforced in code rather than asked for in the prompt:
+
+- **Before dialling** the calling window is checked in the *borrower's* time
+  zone, and the account is checked for an opt-out, an open dispute or
+  grievance, a hardship flag, and the daily/weekly attempt caps. A refused call
+  is never placed and still appears in Call Logs with its reason.
+- **The call opens** with a fixed disclosure - that this is an automated
+  assistant, who it calls on behalf of, and that the call is recorded - then
+  verifies identity before the account is discussed. Neither is ever generated
+  by the model, and the correct identity answer never leaves the server.
+- **Every sentence** the model produces is checked before it is spoken. A
+  threat, or any rupee figure, percentage or date the call was not given, is
+  blocked, logged verbatim, and replaced with a fixed line.
+- **Certain things the caller says bypass the model entirely**: an opt-out is
+  registered and ends the call; distress gets a fixed script with a real
+  helpline number. Asking a model what to do in those moments is both
+  unnecessary and the most dangerous option available.
+- **The agent can act** - record a promise to pay, and so on - through a
+  separate tool server. Which actions a bot may take is set per bot and
+  enforced when the action runs.
+- **After the call** a compliance audit runs. Most of it is deterministic and
+  costs nothing; flagged calls surface in Call Logs for review.
+
+Install the extra runtime it needs with `uv sync --extra collections`.
+
 ## Auth
 
 Accounts live in `data/app.db` (SQLite, created automatically) — no external auth
@@ -196,6 +226,12 @@ app/
                   plus the synthetic Studio/Gemini Live "tier" definition
   call_logs.py    read-only: lists/parses logs/calls/ for the admin Call Logs page
   calllog.py      per-call transcript writer + cost estimate, written to logs/calls/ as the call happens
+  compliance.py   calling-window/eligibility gates, outbound + inbound screens (pure, no LLM)
+  collections_flow.py  scripted call stages (greeting/verify/negotiate/close) - only one calls the LLM
+  customers_store.py   borrower records a collections call is placed against
+  mcp_client.py   connects to the tool server, caches schemas, enforces the per-bot allowlist
+  post_call.py    after the call: compliance audit, summary, retention sweep
+  tts_cache.py    on-disk cache for fixed script lines
   session.py      CallSession: state machine (listening/speaking/...), barge-in - standard pipeline
   live_session.py Gemini Live pipeline: a single bidirectional audio session (no discrete STT/LLM/TTS legs)
   pipeline.py     one agent turn on the standard pipeline: STT -> streaming LLM -> sentence chunks -> TTS
@@ -211,7 +247,9 @@ web/              plain HTML/JS, no framework/build step
   settings.html/admin-panel.js  Advanced Settings page (Users / Bots / Call Logs tabs, admin-only)
   shared.css/js   topbar shell, auth chip, shared table/card styles
   call.css        Live Call card styles, shared between index.html and login.html's preview
+mcp_server/       standalone tool server (MCP, stdio) - one process per call
 scripts/          check_stt/llm/tts/vad/pipeline.py - test each stage in isolation
+                  check_compliance/window/mcp/regressions.py - the compliance and tool layers
 docs/             misc reference docs (voice tier history, architecture notes)
 ```
 

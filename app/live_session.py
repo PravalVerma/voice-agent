@@ -42,6 +42,34 @@ _WRAP_UP_PROMPT = (
 )
 
 
+async def _handle_live_tools(live_session, mcp, tool_call, call_logger, turn_id: int) -> None:
+    """Run the tools the live model asked for and send the results back.
+
+    Same client, same per-bot allowlist and the same server-side customer
+    binding as the cascaded pipeline - only the transport differs, so a tool
+    cannot do anything here it could not do there.
+    """
+    from google.genai import types as genai_types
+
+    responses = []
+    for fc in getattr(tool_call, "function_calls", None) or []:
+        args = dict(fc.args or {})
+        call_logger.log_event({
+            "type": "tool_call", "turn_id": turn_id, "call_id": fc.id,
+            "name": fc.name, "args": args,
+        })
+        result = await mcp.call(fc.name, args)
+        call_logger.log_event({
+            "type": "tool_result", "turn_id": turn_id, "call_id": fc.id,
+            "name": fc.name, "ok": bool(result.get("ok", True)), "result": result,
+        })
+        responses.append(genai_types.FunctionResponse(
+            id=fc.id, name=fc.name, response=result,
+        ))
+    if responses:
+        await live_session.send_tool_response(function_responses=responses)
+
+
 async def run_live_call(
     transport: AudioTransport,
     cfg: AppConfig,
@@ -49,6 +77,7 @@ async def run_live_call(
     voice_name: str | None,
     user_id: int | None = None,
     username: str | None = None,
+    mcp=None,
 ) -> None:
     # cfg already has everything else it needs baked in by config.apply_language()
     # (system_prompt resolved for the bot/language/call_vars) - only cfg.tts is
@@ -78,9 +107,23 @@ async def run_live_call(
             await transport.send_control({"type": "state", "state": new_state.value})
 
     client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
+    # The Live API takes the same tool definitions as the cascaded pipeline,
+    # unwrapped from the OpenAI shape into Gemini's flatter one. Compliance
+    # gates and the scripted stages apply here unchanged; the prompt-budget
+    # discipline does not, because there is no per-turn prompt to trim - this
+    # is one continuous session.
+    live_tools = None
+    if mcp is not None and mcp.available and mcp.schemas():
+        from .providers.llm_gemini import _to_function_declarations
+
+        live_tools = [types.Tool(function_declarations=[
+            types.FunctionDeclaration(**d) for d in _to_function_declarations(mcp.schemas())
+        ])]
+
     live_config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
         system_instruction=cfg.persona.system_prompt,
+        tools=live_tools,
         speech_config=types.SpeechConfig(
             voice_config=types.VoiceConfig(
                 prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=resolved_voice)
@@ -144,6 +187,13 @@ async def run_live_call(
             got_message = False
             async for message in live_session.receive():
                 got_message = True
+                # Tool calls arrive with no server_content, so this has to come
+                # before the guard below - that `continue` is exactly where they
+                # were being dropped.
+                tool_call = getattr(message, "tool_call", None)
+                if tool_call is not None and mcp is not None:
+                    await _handle_live_tools(live_session, mcp, tool_call, call_logger, turn_id)
+                    continue
                 sc = message.server_content
                 if sc is None:
                     continue

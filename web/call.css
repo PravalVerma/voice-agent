@@ -316,6 +316,30 @@
 .msg.agent.interrupted { opacity: 0.85; }
 .msg .who { display: block; font-size: 0.68rem; opacity: 0.75; margin-bottom: 0.15rem; }
 .interrupted-tag { margin-left: 0.5rem; background: #fdecec; color: var(--red); vertical-align: middle; }
+.scripted-tag { margin-left: 0.5rem; background: #eef1fb; color: var(--accent); vertical-align: middle; }
+
+/* Call Logs detail: entries that are not speech. A tool call, a blocked reply
+   and a stage change are events, so they deliberately do not look like the
+   chat bubbles on either side of them. */
+.msg.tool { align-self: flex-start; max-width: 85%; background: #f6f7fb;
+            border: 1px dashed var(--border); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 0.82rem; }
+.msg.blocked { align-self: flex-start; max-width: 85%; background: #fdecec;
+               border: 1px solid var(--red); color: var(--red); }
+.msg.flag { align-self: center; max-width: 92%; background: #fff8e6;
+            border: 1px solid #e0b000; font-size: 0.83rem; }
+.stage-divider { align-self: stretch; text-align: center; font-size: 0.72rem;
+                 letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-muted);
+                 border-top: 1px solid var(--border); padding-top: 0.5rem; margin-top: 0.3rem; }
+.review-banner { align-self: stretch; font-size: 0.85rem; line-height: 1.45;
+                 background: #f6f7fb; border: 1px solid var(--border); border-radius: 10px;
+                 padding: 0.55rem 0.8rem; margin-bottom: 0.4rem; }
+.badge.sev-high { background: #fdecec; color: var(--red); }
+.badge.sev-medium, .badge.sev-med { background: #fff4e0; color: #a35f00; }
+.badge.sev-low { background: #eef1fb; color: var(--accent); }
+.badge.tool-ok { background: #e8f6ec; color: var(--green); }
+.review-banner.sev-high { background: #fdecec; border-color: var(--red); color: var(--red); }
+.review-banner.sev-medium, .review-banner.sev-med { background: #fff4e0; border-color: #e0b000; }
 
 @media (max-width: 1100px) {
   .call-layout { grid-template-columns: 1fr; height: auto; }

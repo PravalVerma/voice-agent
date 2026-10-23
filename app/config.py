@@ -177,6 +177,28 @@ class CollectionsConfig(BaseModel):
         return text
 
 
+class LLMPostConfig(BaseModel):
+    """Post-call jobs. See the [llm_post] comment in config.toml for why the
+    audit is mostly deterministic rather than batched through a model."""
+
+    enabled: bool = True
+    provider: str = "groq"
+    model: str = "openai/gpt-oss-20b"
+    in_process: bool = True
+    poll_seconds: int = Field(60, ge=5)
+    settle_seconds: int = Field(30, ge=0)
+    max_attempts: int = Field(3, ge=1)
+    rpm: int = Field(3, ge=1)
+    tpm: int = Field(2000, ge=1)
+    batch_token_budget: int = Field(1800, ge=1)
+
+
+class RetentionConfig(BaseModel):
+    enabled: bool = False
+    recording_keep_days: int = Field(180, ge=1)
+    record_keep_days: int = Field(2555, ge=1)
+
+
 class CostConfig(BaseModel):
     usd_to_inr: float = 88.0
     stt_usd_per_hour: float = 0.04
@@ -211,6 +233,8 @@ class AppConfig(BaseModel):
     cost: CostConfig = CostConfig()
     compliance: ComplianceConfig = ComplianceConfig()
     collections: CollectionsConfig = CollectionsConfig()
+    llm_post: LLMPostConfig = LLMPostConfig()
+    retention: RetentionConfig = RetentionConfig()
     default_language: str = "en"
     languages: list[LanguageConfig] = []
 

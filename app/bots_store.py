@@ -22,7 +22,7 @@ If you don't know something, say so briefly rather than guessing."""
 def list_bots() -> list[dict]:
     conn = get_connection()
     try:
-        rows = conn.execute("SELECT id, name, created_at FROM bots ORDER BY id").fetchall()
+        rows = conn.execute("SELECT id, name, mode, created_at FROM bots ORDER BY id").fetchall()
         bots = [dict(r) for r in rows]
         for bot in bots:
             lang_rows = conn.execute(
@@ -75,7 +75,7 @@ def get_bot(bot_id: int) -> dict | None:
     conn = get_connection()
     try:
         bot_row = conn.execute(
-            "SELECT id, name, created_at FROM bots WHERE id = ?", (bot_id,)
+            "SELECT id, name, mode, created_at FROM bots WHERE id = ?", (bot_id,)
         ).fetchone()
         if bot_row is None:
             return None
@@ -84,6 +84,11 @@ def get_bot(bot_id: int) -> dict | None:
         ).fetchall()
         bot = dict(bot_row)
         bot["prompts"] = {r["language_code"]: r["prompt"] for r in prompt_rows}
+        tools_row = conn.execute(
+            "SELECT allowed FROM bot_tools WHERE bot_id = ?", (bot_id,)
+        ).fetchone()
+        raw = tools_row["allowed"] if tools_row is not None else None
+        bot["allowed_tools"] = json.loads(raw) if raw else None
         return bot
     finally:
         conn.close()

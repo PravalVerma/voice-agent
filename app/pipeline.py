@@ -36,12 +36,18 @@ _FILLER_GRACE_S = 0.35
 class _Filler:
     """A fixed line queued mid-turn, spoken from cache.
 
-    Distinct from a plain sentence so the consumer knows not to add it to the
-    reply: filler is not part of what the model said, and feeding it back would
-    teach the model that "one moment, let me check" is a thing it wrote.
+    Distinct from a plain sentence so the consumer knows not to treat it as
+    something the model said. `terminal` separates the two kinds:
+
+    - False ("one moment, let me check") covers a gap and is forgettable. It
+      must NOT reach history, or the model learns it wrote it.
+    - True (a confirmation, or a failure notice) is the last thing the caller
+      hears this turn, so it MUST reach history. Leaving it out makes the model
+      believe it never confirmed, and it confirms again on the next turn.
     """
 
     text: str
+    terminal: bool = False
 
 
 def _chunk_pcm(pcm: bytes, sample_rate: int, chunk_ms: int = _SEND_CHUNK_MS) -> list[bytes]:
@@ -164,13 +170,13 @@ async def _run_tool_phase(session, turn_id: int, queue, calls: list, timing: dic
         if isinstance(e, asyncio.CancelledError):
             raise
         log.warning("turn %d: tool phase did not complete in time (%s)", turn_id, type(e).__name__)
-        await queue.put(_Filler(_script_line(session, "tool_failed")))
+        await queue.put(_Filler(_script_line(session, "tool_failed"), terminal=True))
         # No round two. Spending a request so the model can compose an apology
         # we already have written is the most expensive way to say nothing.
         return []
 
     if all(r.get("ok") is False for r in results):
-        await queue.put(_Filler(_script_line(session, "tool_failed")))
+        await queue.put(_Filler(_script_line(session, "tool_failed"), terminal=True))
         return []
     return results
 
@@ -426,11 +432,17 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
         return calls
 
     async def producer() -> None:
+        # nonlocal, not a fresh local: this function ASSIGNS queued_text below,
+        # which without the declaration would bind a local that _round never
+        # writes to - leaving the "did round two say anything?" test permanently
+        # False, and the fixed confirmation spoken on top of a reply that was
+        # perfectly fine.
+        nonlocal queued_text
         try:
             if session.llm.request_count >= session.cfg.llm.max_requests_per_call:
                 log.error("call %s: request ceiling (%d) reached - not calling the model again",
                           session.session_id, session.cfg.llm.max_requests_per_call)
-                await queue.put(_Filler(_script_line(session, "tool_failed")))
+                await queue.put(_Filler(_script_line(session, "tool_failed"), terminal=True))
                 return
             tools = _tools_for(session)
             calls = await _round(session.history, tools or None)
@@ -452,7 +464,7 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
                         # words. Say something fixed rather than leaving the
                         # caller on a filler line followed by nothing.
                         log.info("turn %d: round two produced no speech - using the fixed confirmation", turn_id)
-                        await queue.put(_Filler(_script_line(session, "tool_done")))
+                        await queue.put(_Filler(_script_line(session, "tool_done"), terminal=True))
         finally:
             await queue.put(_SENTINEL)
 
@@ -472,7 +484,8 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
                     await session.set_state(State.SPEAKING)
                     speaking_started = time.monotonic()
                 session.spoken_anything = True
-                spoke_fixed = sentence.text
+                if sentence.terminal:
+                    spoke_fixed = sentence.text
                 total_audio_s += await _speak_text(session, turn_id, sentence.text, timing, cache=True)
                 continue
 
@@ -530,7 +543,11 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
 
     reply_text = " ".join(reply_parts).strip()
     if reply_text:
-        session.history.append({"role": "assistant", "content": reply_text})
+        # Append any closing fixed line too. History has to match what the
+        # caller heard end to end - recording only the model's half leaves the
+        # agent believing it never confirmed, so it confirms again next turn.
+        heard = f"{reply_text} {spoke_fixed}".strip() if spoke_fixed else reply_text
+        session.history.append({"role": "assistant", "content": heard})
     elif blocked:
         # History must match what the caller actually heard, not what the model
         # wanted to say. Recording the recovery line keeps the next turn honest:
@@ -561,7 +578,8 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
         )
     session.call_logger.log_event(
         {"type": "agent_turn", "turn_id": turn_id,
-         "text": reply_text or (_recovery_line(session) if blocked else (spoke_fixed or "")),
+         "text": (f"{reply_text} {spoke_fixed}".strip() if (reply_text and spoke_fixed) else
+                  reply_text or (_recovery_line(session) if blocked else (spoke_fixed or ""))),
          "interrupted": False, "blocked": blocked}
     )
 

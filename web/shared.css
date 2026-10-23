@@ -359,13 +359,15 @@ tbody td { padding: 1.1rem 0.9rem; border-bottom: 1px solid var(--border); verti
 .admin-table.bots-table col.col-prompts { width: 35%; }
 .admin-table.bots-table col.col-created { width: 20%; }
 .admin-table.bots-table col.col-actions { width: 20%; }
-.admin-table.calllogs-table col.col-username { width: 20%; }
-.admin-table.calllogs-table col.col-when { width: 20%; }
-.admin-table.calllogs-table col.col-lang { width: 11%; }
-.admin-table.calllogs-table col.col-tier { width: 15%; }
-.admin-table.calllogs-table col.col-duration { width: 12%; }
-.admin-table.calllogs-table col.col-cost { width: 10%; }
-.admin-table.calllogs-table col.col-actions { width: 12%; }
+.admin-table.calllogs-table col.col-username { width: 17%; }
+.admin-table.calllogs-table col.col-when { width: 16%; }
+.admin-table.calllogs-table col.col-lang { width: 8%; }
+.admin-table.calllogs-table col.col-tier { width: 12%; }
+.admin-table.calllogs-table col.col-duration { width: 10%; }
+.admin-table.calllogs-table col.col-cost { width: 9%; }
+.admin-table.calllogs-table col.col-review { width: 11%; }
+.admin-table.calllogs-table col.col-recording { width: 9%; }
+.admin-table.calllogs-table col.col-actions { width: 8%; }
 tbody tr:hover { background: #fafbfd; }
 
 .empty-state { color: var(--text-muted); font-size: 0.9rem; padding: 2rem 0; text-align: center; }

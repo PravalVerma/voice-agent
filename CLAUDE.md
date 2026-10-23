@@ -45,7 +45,18 @@ uv run python scripts/check_llm.py "hi" --provider ollama   # ...against another
 uv run python scripts/check_tts.py "Hello there!"           # synthesize out.wav
 uv run python scripts/check_vad.py sample.wav               # print detected speech segments
 uv run python scripts/check_pipeline.py question.wav        # full standard pipeline offline -> reply.wav
+uv run python scripts/check_regressions.py                  # every fixed defect, no network needed
+uv run python scripts/check_compliance.py "sentence"        # outbound/inbound screens
+uv run python scripts/check_window.py --tz Asia/Kolkata     # calling-window gate
+uv run python scripts/check_mcp.py --customer 1             # tool server: schemas + execution
+uv run python scripts/check_cache.py                        # measure the LLM prompt-cache floor
+uv run python scripts/run_post_jobs.py --dry-run            # post-call queue
 ```
+
+`check_regressions.py` is the closest thing to a test suite here. Every case in
+it is a defect that once shipped silently - raising nothing, logging nothing,
+and producing plausible output while doing the wrong thing. Run it after
+touching compliance, the numeral parsing, the tool loop, or history handling.
 
 Diagnostic modes in the browser UI (append to the Voice Assistant URL):
 - `?mode=echo` — mic audio echoed straight back; proves capture/playback without touching any provider.
@@ -71,6 +82,16 @@ app/
   call_logs.py    read-only: lists/parses logs/calls/ for the admin Call Logs page
   calllog.py      per-call transcript writer + cost estimate, written to logs/calls/ as the call happens
   call_state.py   State enum, split out so session.py and pipeline.py can both import it without a cycle
+  compliance.py   pure gates: calling window, contact eligibility, outbound/inbound screens.
+                  No LLM, no network. The prompt is a hint; this is the enforcement.
+  collections_flow.py  scripted stages (GREETING/VERIFY/NEGOTIATE/CLOSE). Only NEGOTIATE
+                  calls the LLM; opt-out and distress are handled here, before the model.
+  customers_store.py   borrower records. Money is integer paise throughout; verify_value
+                  never leaves the server (see get_verify_value).
+  mcp_client.py   tool-server client. Schemas cached per PROCESS, execution gets one
+                  server process per CALL bound to a customer via the environment.
+  post_call.py    after-call audit/summary/retention. The queue is the log directory.
+  tts_cache.py    content-addressed disk cache for fixed script lines.
   session.py      CallSession: state machine (listening/speaking/...), barge-in - standard pipeline
   live_session.py Gemini Live pipeline: a single bidirectional audio session (no discrete STT/LLM/TTS legs)
   pipeline.py     one agent turn on the standard pipeline: STT -> streaming LLM -> sentence chunks -> TTS
@@ -88,6 +109,9 @@ web/              plain HTML/JS, no framework/build step
   settings.html/admin-panel.js  Advanced Settings page (Users / Bots / Call Logs tabs, admin-only)
   shared.css/js   topbar shell, auth chip, shared table/card styles
   call.css        Live Call card styles, shared between index.html and login.html's preview
+mcp_server/       standalone MCP tool server over stdio; imports app.db/config/compliance,
+                  never app.main. Tools take no customer_id/session_id/phone - those are
+                  bound into the process at spawn, so the model cannot supply or forge them.
 scripts/          check_stt/llm/tts/vad/pipeline.py - test each stage in isolation
 docs/             misc reference docs (voice tier history, architecture notes)
 ```
@@ -156,6 +180,35 @@ streamed audio-token rates instead. This is approximate — good enough to catch
 runaway call, not a substitute for the provider's actual invoice. All of it is
 browsable from Advanced Settings → Call Logs (admin-only), including the audio
 recording when `[call] record_calls` is on.
+
+### Collections mode
+
+`bots.mode` is `'assistant'` (today's behaviour, unchanged) or `'collections'`.
+A collections bot requires a customer selected at call time and refuses to
+start without one - without an account there is no window to check, no
+eligibility to test, and nothing to validate spoken figures against, so running
+anyway would be the compliance layer quietly switched off.
+
+Things worth knowing before changing any of it:
+
+- **Groq's free tier does not cache prompt prefixes.** Measured 2026-10-23 with
+  `scripts/check_cache.py`: `cached_tokens` is 0 at every prefix size and
+  `prompt_tokens_details` comes back `None`. The fixed system prompt is kept
+  because it is cheap and pays off on a paid tier, but raw token count is the
+  only budget lever that currently works. Re-run that script if the account is
+  ever upgraded.
+- **Compliance patterns in `config.toml` must use TOML *literal* strings**
+  (single quotes, or `''' '''` when the pattern contains an apostrophe). A
+  double-quoted `"\b"` decodes to a backspace, compiles fine, and silently
+  matches nothing. `ComplianceConfig` rejects control characters for this reason.
+- **Devanagari needs the explicit `\u0900-\u097F` range** in any tokenizer;
+  Python's `\w` excludes combining marks and will shred every Hindi word.
+- **Tool messages never enter `session.history`**, which is what keeps
+  `trim_history`'s slicing safe. Round two of a tool turn declares the tools
+  and discards what it asks for - with `tools=None` gpt-oss emits a call
+  anyway and Groq rejects the whole request.
+- The outbound screen is inert unless `session.allowed_facts` is set, so
+  assistant bots are completely unaffected by any of it.
 
 ## Running as a service (optional)
 

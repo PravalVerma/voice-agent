@@ -6,6 +6,7 @@ import logging
 import os
 import sqlite3
 import time
+import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
@@ -13,7 +14,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, bots_store, call_logs, calllog, compliance, customers_store, tts_catalog
+from . import auth, bots_store, call_logs, calllog, compliance, customers_store, post_call, tts_catalog
 from .audio.frames import FrameBuffer, wav_wrap
 from .collections_flow import CollectionsFlow
 from .audio.vad import SileroVAD, SpeechEnd, SpeechStart, VADGate
@@ -62,6 +63,12 @@ async def startup() -> None:
     # must not stop the server booting for the assistant bots that don't need
     # it, and a collections call refuses cleanly later if this never succeeded.
     asyncio.create_task(_warm_tools())
+    if cfg.llm_post.in_process:
+        # Post-call work shares this process by default. Set [llm_post]
+        # in_process = false and schedule scripts/run_post_jobs.py instead if
+        # it should not. Either way the queue is the log directory, so nothing
+        # is lost by switching between them or by a restart mid-sweep.
+        asyncio.create_task(post_call.loop(cfg))
 
 
 async def _warm_tools() -> None:
@@ -124,6 +131,14 @@ class CustomerFlagsBody(BaseModel):
     dispute_open: bool | None = None
     grievance_open: bool | None = None
     hardship: bool | None = None
+
+
+class BotModeBody(BaseModel):
+    mode: str
+
+
+class BotToolsBody(BaseModel):
+    allowed_tools: list[str] | None = None
 
 
 class CreateBotBody(BaseModel):
@@ -320,6 +335,60 @@ async def api_delete_bot(bot_id: int, admin: dict = Depends(auth.require_admin))
     if bots_store.count_bots() <= 1:
         raise HTTPException(status_code=400, detail="can't delete the last remaining bot")
     bots_store.delete_bot(bot_id)
+    return {"ok": True}
+
+
+def _validate_allowed_tools(allowed_tools: list[str] | None) -> None:
+    """Mirrors _validate_allowed_tiers, including the empty-list refusal.
+
+    None means "every tool", so an empty list is almost always a UI slip rather
+    than an intent to disable the bot entirely - and silently storing it would
+    leave an agent that can talk but never act, with nothing to show why.
+    """
+    if allowed_tools is None:
+        return
+    if not allowed_tools:
+        raise HTTPException(
+            status_code=400,
+            detail="allowed_tools can't be an empty list - omit it instead to allow every tool",
+        )
+    known = {s["function"]["name"] for s in McpClient.schemas()}
+    if not known:
+        return  # tool server never came up; nothing to validate against
+    unknown = sorted(set(allowed_tools) - known)
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"unknown tool(s): {unknown}")
+
+
+@app.get("/api/tools")
+async def api_list_tools(admin: dict = Depends(auth.require_admin)) -> list[dict]:
+    """The tool catalogue the allowlist editor offers.
+
+    Names and descriptions only - these are what the admin is choosing between,
+    and the parameter schemas would just be noise in a picker.
+    """
+    return [
+        {"name": s["function"]["name"], "description": s["function"].get("description", "")}
+        for s in McpClient.schemas()
+    ]
+
+
+@app.put("/api/bots/{bot_id}/mode")
+async def api_set_bot_mode(bot_id: int, body: BotModeBody, admin: dict = Depends(auth.require_admin)) -> dict:
+    if body.mode not in ("assistant", "collections"):
+        raise HTTPException(status_code=400, detail="mode must be 'assistant' or 'collections'")
+    if bots_store.get_bot(bot_id) is None:
+        raise HTTPException(status_code=404, detail="no such bot")
+    bots_store.set_mode(bot_id, body.mode)
+    return {"ok": True}
+
+
+@app.put("/api/bots/{bot_id}/tools")
+async def api_set_bot_tools(bot_id: int, body: BotToolsBody, admin: dict = Depends(auth.require_admin)) -> dict:
+    if bots_store.get_bot(bot_id) is None:
+        raise HTTPException(status_code=404, detail="no such bot")
+    _validate_allowed_tools(body.allowed_tools)
+    bots_store.set_tool_allowlist(bot_id, body.allowed_tools)
     return {"ok": True}
 
 
@@ -600,6 +669,17 @@ async def ws_call(websocket: WebSocket) -> None:
             customer_id = int(event.data.get("customer_id"))
         except (TypeError, ValueError):
             customer_id = None
+        bot_mode = bots_store.get_mode(bot_id)
+        if bot_mode == "collections" and customer_id is None:
+            # A collections bot has nothing to check without an account: no
+            # calling window, no eligibility, no figures to validate speech
+            # against. Running it anyway would be the compliance layer quietly
+            # switched off, so refuse instead.
+            await transport.send_control(
+                {"type": "error", "message": "this bot needs an account selected before a call can start"}
+            )
+            await transport.close()
+            return
         if customer_id is not None:
             cfg_now = get_config()
             customer = customers_store.get_customer(customer_id)
@@ -652,6 +732,7 @@ async def ws_call(websocket: WebSocket) -> None:
             user["id"],
             user["username"],
             customer,
+            bot_mode,
         )
     else:
         await transport.send_control({"type": "error", "message": f"unknown mode '{mode}'"})
@@ -744,6 +825,7 @@ async def run_call(
     user_id: int | None = None,
     username: str | None = None,
     customer: dict | None = None,
+    mode: str = "assistant",
 ) -> None:
     # every bot supports every pipeline - which one runs is purely a per-call
     # choice, picked via the Voice Quality dropdown's synthetic "gemini_live"
@@ -759,7 +841,19 @@ async def run_call(
         return
 
     if pipeline == "gemini_live":
-        await run_live_call(transport, cfg, gender, tts_voice, user_id, username)
+        # The Studio pipeline gets the same tool server, with the same per-bot
+        # allowlist and the same server-side customer binding - only the
+        # transport differs.
+        live_mcp = None
+        if customer and mode == "collections":
+            live_mcp = McpClient(customer["id"], uuid.uuid4().hex[:8],
+                                 allowed=bots_store.get_tool_allowlist(bot_id))
+            await live_mcp.connect()
+        try:
+            await run_live_call(transport, cfg, gender, tts_voice, user_id, username, mcp=live_mcp)
+        finally:
+            if live_mcp is not None:
+                await live_mcp.aclose()
         return
 
     try:
@@ -768,7 +862,9 @@ async def run_call(
         tts = build_tts(cfg)
         # A bound customer is what makes this a collections call. The gates in
         # ws_call have already cleared it by this point.
-        flow = CollectionsFlow(cfg, customer) if customer else None
+        # The bot's mode decides, not merely whether an account was picked: an
+        # assistant bot stays an assistant bot even if one was.
+        flow = CollectionsFlow(cfg, customer) if (customer and mode == "collections") else None
         session = CallSession(transport, cfg, stt, llm, tts, user_id=user_id,
                               username=username, flow=flow)
         if customer:
