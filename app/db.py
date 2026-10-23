@@ -1,9 +1,13 @@
 """SQLite storage for users and sessions. No ORM - the schema is two small tables."""
 
+import json
+import logging
 import sqlite3
 from pathlib import Path
 
 from .config import ROOT
+
+log = logging.getLogger("agent")
 
 DB_PATH = ROOT / "data" / "app.db"
 
@@ -175,6 +179,53 @@ def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
     return any(row["name"] == column for row in conn.execute(f"PRAGMA table_info({table})").fetchall())
 
 
+#: The three Google quality levels were collapsed into one cascaded tier, so a
+#: stored entitlement naming any of them means the same thing now. Kept as data
+#: rather than a rename because "Standard" is also a voice-family word, and this
+#: table says plainly which strings are historical.
+_RETIRED_TIERS = {"Standard": "cascaded", "Neural2": "cascaded", "Chirp3-HD": "cascaded"}
+
+
+def _migrate_collapsed_tiers(conn: sqlite3.Connection) -> None:
+    """Rewrite user_bots.allowed_tiers from the old three-tier vocabulary.
+
+    Widens nobody's access and narrows nobody's: the three cascaded names map
+    to the one that replaced them, "gemini_live" is preserved exactly, and a
+    user who was allowed two of the old three gets the new one once rather
+    than twice. NULL still means "every tier", so those rows are left alone.
+
+    Unrecognised names are dropped, because main.py now refuses a tier it does
+    not offer - leaving one in place would mean a stored entitlement that can
+    never match. A row that would end up empty keeps its old value instead, so
+    a mapping mistake cannot silently lock a user out of every tier.
+
+    Idempotent: a second run finds nothing left to change.
+    """
+    rows = conn.execute(
+        "SELECT id, allowed_tiers FROM user_bots WHERE allowed_tiers IS NOT NULL"
+    ).fetchall()
+    touched = 0
+    for row in rows:
+        try:
+            stored = json.loads(row["allowed_tiers"])
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(stored, list):
+            continue
+        migrated: list[str] = []
+        for name in stored:
+            new = _RETIRED_TIERS.get(name, name)
+            if new in ("cascaded", "gemini_live") and new not in migrated:
+                migrated.append(new)
+        if not migrated or migrated == stored:
+            continue
+        conn.execute("UPDATE user_bots SET allowed_tiers = ? WHERE id = ?",
+                     (json.dumps(migrated), row["id"]))
+        touched += 1
+    if touched:
+        log.info("migrated allowed_tiers on %d user_bots row(s) to the collapsed tier", touched)
+
+
 def init_db() -> None:
     conn = get_connection()
     try:
@@ -205,6 +256,7 @@ def init_db() -> None:
             conn.execute("ALTER TABLE bots ADD COLUMN mode TEXT NOT NULL DEFAULT 'assistant'")
         if not _has_column(conn, "user_bots", "allowed_tiers"):
             conn.execute("ALTER TABLE user_bots ADD COLUMN allowed_tiers TEXT")
+        _migrate_collapsed_tiers(conn)
         # username lookups are case-insensitive (auth.get_user_by_username) so
         # uniqueness has to be too, or "Alex@example.com" and "alex@example.com"
         # could both be created and login would be ambiguous between them - the

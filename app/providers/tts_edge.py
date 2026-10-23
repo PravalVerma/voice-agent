@@ -39,7 +39,7 @@ from .base import TTSProvider
 log = logging.getLogger(__name__)
 
 
-class EdgeTTSError(RuntimeError):
+class SpeechSynthesisError(RuntimeError):
     """Synthesis failed. The message is for logs and the check scripts, never
     for a caller or an admin screen - session.py speaks a fixed neutral line
     instead, and nothing here is rendered in the UI."""
@@ -116,24 +116,26 @@ class EdgeTTS(TTSProvider):
 
     async def synthesize_stream(self, text: str) -> AsyncIterator[bytes]:
         if self._breaker.is_open:
-            raise EdgeTTSError("speech synthesis is temporarily unavailable")
+            raise SpeechSynthesisError("speech synthesis is temporarily unavailable")
         try:
             got_audio = False
             async for pcm in self._stream_pcm(text):
                 got_audio = True
                 yield pcm
             if not got_audio:
-                raise EdgeTTSError("speech synthesis returned no audio")
+                raise SpeechSynthesisError("speech synthesis returned no audio")
         except GeneratorExit:
             raise  # barge-in cancelled the consumer; not a provider failure
         except asyncio.CancelledError:
             raise
         except Exception as e:
             self._breaker.record_failure()
-            # Full detail at log level only. This is the one place the real
-            # cause is visible, so it is logged whole rather than summarised.
-            log.exception("tts: synthesis failed for %d chars", len(text))
-            raise EdgeTTSError(f"speech synthesis failed: {type(e).__name__}: {e}") from e
+            # Deliberately not logged here. session.py already logs a failed
+            # turn with log.exception and the full traceback, and it knows
+            # which call and turn this was - logging again would print the same
+            # stack twice in the server and bury the one-line failure the check
+            # scripts report. The cause is chained, so nothing is lost.
+            raise SpeechSynthesisError(f"{type(e).__name__}: {e}".rstrip(": ")) from e
         else:
             self._breaker.record_success()
 

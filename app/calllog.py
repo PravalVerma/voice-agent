@@ -9,7 +9,7 @@ import uuid
 from . import s3_archive
 from .audio.frames import wav_wrap
 from .config import ROOT, AppConfig
-from .tts_catalog import QUALITY_LABEL, tier_of
+from .tts_catalog import QUALITY_LABEL
 
 log = logging.getLogger("agent")
 
@@ -95,7 +95,7 @@ class CallLogger:
         self.tts_tier = (
             "Studio" if pipeline == "gemini_live"
             else "Gemini" if cfg.tts.provider == "gemini"
-            else QUALITY_LABEL.get(tier_of(cfg.tts.voice), tier_of(cfg.tts.voice))
+            else QUALITY_LABEL.get(cfg.tts.tier, cfg.tts.tier)
         )
         self.stt_requests = 0
         self.stt_billed_seconds = 0.0

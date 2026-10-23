@@ -51,7 +51,9 @@ async def main() -> None:
 
     tts_catalog.init_catalog([f"{args.language}-IN"])
     try:
-        voice, tier, gender = tts_catalog.resolve_voice(f"{args.language}-IN", args.tier, args.gender, None)
+        voice, tier, gender = tts_catalog.resolve_voice(
+            f"{args.language}-IN", args.tier, args.gender, None, cfg
+        )
     except ValueError as e:
         sys.exit(f"error: {e} - check GOOGLE_APPLICATION_CREDENTIALS and that the Text-to-Speech API is enabled")
 

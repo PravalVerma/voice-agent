@@ -440,17 +440,19 @@ def apply_language(
             }
         )
 
-    voice, resolved_tier, resolved_gender = tts_catalog.resolve_voice(lang.locale, tier, gender, voice_name)
+    voice, resolved_tier, resolved_gender = tts_catalog.resolve_voice(
+        lang.locale, tier, gender, voice_name, cfg
+    )
     system_prompt = (
         base_prompt + "\n" + lang_instruction + _LANGUAGE_SUFFIX_TAIL.format(gender=resolved_gender)
     )
     return cfg.model_copy(
         update={
             "stt": cfg.stt.model_copy(update={"language": lang.stt_language}),
-            "tts": cfg.tts.model_copy(update={"voice": voice}),
+            "tts": cfg.tts.model_copy(update={"voice": voice, "tier": resolved_tier}),
             "persona": cfg.persona.model_copy(update={"system_prompt": system_prompt}),
             "cost": cfg.cost.model_copy(
-                update={"tts_usd_per_mchar": tts_catalog.TIER_RATES[resolved_tier]}
+                update={"tts_usd_per_mchar": tts_catalog.rate_for(cfg, voice)}
             ),
         }
     )

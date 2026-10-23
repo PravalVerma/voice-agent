@@ -239,7 +239,7 @@ async def tts_options(
     # every bot supports every pipeline - the Gemini Live pipeline is just one
     # more entry in the same Voice Quality dropdown, alongside the real
     # Standard/Neural2/Chirp3-HD quality ladder, not a separate control
-    tiers = tts_catalog.tiers_for(lang.locale) + [tts_catalog.gemini_voice_tier()]
+    tiers = [tts_catalog.cascaded_tier(lang.locale, cfg), tts_catalog.gemini_voice_tier()]
     # admins get the free-choice topbar selector (no assignment_id) and always
     # see every tier, for testing; everyone else may be restricted to a subset
     # of tiers an admin picked for their specific (bot, language) assignment
@@ -659,6 +659,17 @@ async def ws_call(websocket: WebSocket) -> None:
                 )
                 await transport.close()
                 return
+        # Whoever picked it, the tier name itself has to be one the app still
+        # offers. The entitlement check above is skipped when an assignment
+        # allows every tier, and admins skip it entirely, so without this a
+        # retired name (or an invented one) reached resolve_voice and used to
+        # be silently downgraded to the cheapest tier rather than refused.
+        if event.data.get("tts_tier") not in tts_catalog.all_tier_names():
+            await transport.send_control(
+                {"type": "error", "message": "that voice quality is not available"}
+            )
+            await transport.close()
+            return
         # Pre-call compliance gates. A customer_id is what makes this a
         # collections call: an ordinary assistant call has no borrower and no
         # window to be outside of. Both gates run server-side off the stored
