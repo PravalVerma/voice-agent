@@ -79,7 +79,7 @@ async def main() -> None:
             chars += len(text)
             print(f"  WARMED {key:22} ({len(text)} chars)")
 
-    rate = cfg.cost.tts_usd_per_mchar
+    rate = tts_catalog.rate_for(cfg, voice)
     cost_inr = (chars / 1_000_000) * rate * cfg.cost.usd_to_inr
     print(f"\n{len(scripts)} lines: {hits} already cached, {warmed} synthesized, {skipped} per-call")
     print(f"synthesis cost this run: Rs {cost_inr:.4f} ({chars} chars at ${rate}/M)")
