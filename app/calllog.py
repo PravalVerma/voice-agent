@@ -97,6 +97,12 @@ class CallLogger:
             else "Gemini" if cfg.tts.provider == "gemini"
             else QUALITY_LABEL.get(cfg.tts.tier, cfg.tts.tier)
         )
+        # Recorded so a historical cost stays interpretable. The tier label is
+        # stable across provider switches by design, so without this a call
+        # billed at one provider's rate and a call billed at another's are
+        # indistinguishable in the log - including the free one, whose zero is
+        # otherwise unexplainable.
+        self.tts_provider = "gemini_live" if pipeline == "gemini_live" else cfg.tts.provider
         self.stt_requests = 0
         self.stt_billed_seconds = 0.0
         self.stt_true_seconds = 0.0
@@ -243,6 +249,7 @@ class CallLogger:
             "username": self.username,
             "language": self.language,
             "tts_tier": self.tts_tier,
+            "tts_provider": self.tts_provider,
             "duration_s": round(duration_s, 1),
             "turn_count": self.turn_count,
             "usage": {

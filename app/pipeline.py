@@ -218,6 +218,19 @@ def _recovery_line(session) -> str:
     return lines.get(session.cfg.stt.language) or lines.get("en") or "Let me confirm that and come back to you."
 
 
+def _mark_first_audio(timing: dict) -> None:
+    """Record when the caller's first audio byte went out, relative to the turn.
+
+    Logged next to llm_done_ms so the two can be compared directly: audio
+    leaving before the model has finished generating is the whole point of
+    chunking replies into sentences, and it is the kind of property that
+    regresses silently when the TTS path changes.
+    """
+    t0 = timing.get("_turn_t0")
+    if t0 is not None:
+        timing.setdefault("first_audio_sent_ms", (time.perf_counter() - t0) * 1000)
+
+
 async def _speak_text(session, turn_id: int, text: str, timing: dict, *, cache: bool = False) -> float:
     """Synthesize + send one sentence; return its audio duration in seconds.
 
@@ -231,11 +244,13 @@ async def _speak_text(session, turn_id: int, text: str, timing: dict, *, cache: 
     if cache:
         pcm, hit = await tts_cache.synthesize_cached(
             session.tts, text,
+            provider=session.cfg.tts.provider,
             voice=session.cfg.tts.voice,
             speaking_rate=session.cfg.tts.speaking_rate,
             sample_rate=rate,
         )
         timing.setdefault("tts_first_ms", (time.perf_counter() - t0) * 1000)
+        _mark_first_audio(timing)
         for chunk in _chunk_pcm(pcm, rate):
             await session.transport.send_audio(turn_id, chunk)
         total_bytes = len(pcm)
@@ -248,6 +263,7 @@ async def _speak_text(session, turn_id: int, text: str, timing: dict, *, cache: 
         frame_bytes = int(rate * _SEND_CHUNK_MS / 1000) * 2
         async for piece in session.tts.synthesize_stream(text):
             timing.setdefault("tts_first_ms", (time.perf_counter() - t0) * 1000)
+            _mark_first_audio(timing)
             total_bytes += len(piece)
             pending += piece
             while len(pending) >= frame_bytes:
@@ -258,6 +274,7 @@ async def _speak_text(session, turn_id: int, text: str, timing: dict, *, cache: 
     else:
         pcm = await session.tts.synthesize(text)
         timing.setdefault("tts_first_ms", (time.perf_counter() - t0) * 1000)
+        _mark_first_audio(timing)
         for chunk in _chunk_pcm(pcm, rate):
             await session.transport.send_audio(turn_id, chunk)
         total_bytes = len(pcm)
@@ -348,6 +365,7 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
     session.call_logger.turn_count += 1
     timing: dict = {}
     t_turn0 = time.perf_counter()
+    timing["_turn_t0"] = t_turn0
     await session.set_state(State.PROCESSING)
 
     duration_s = pcm_duration_s(utterance_pcm, PIPELINE_SAMPLE_RATE)
@@ -542,8 +560,12 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
             session.spoken_anything = True
             total_audio_s += await _speak_text(session, turn_id, sentence, timing)
 
+    async def timed_producer() -> None:
+        await producer()
+        timing["llm_done_ms"] = (time.perf_counter() - t_turn0) * 1000
+
     try:
-        await asyncio.gather(producer(), consumer())
+        await asyncio.gather(timed_producer(), consumer())
     except asyncio.CancelledError:
         # barge-in: record whatever the agent managed to say before being cut off
         reply_text = " ".join(reply_parts).strip()
@@ -608,7 +630,8 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
     log.info(
         "turn %d timing: %s",
         turn_id,
-        {k: (round(v, 1) if isinstance(v, float) else v) for k, v in timing.items()},
+        {k: (round(v, 1) if isinstance(v, float) else v)
+         for k, v in timing.items() if not k.startswith("_")},
     )
     await session.transport.send_control({"type": "turn_end", "turn_id": turn_id})
 

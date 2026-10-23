@@ -1,6 +1,8 @@
 """CallSession: per-connection state machine wiring VAD events to agent turns."""
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
 import uuid
@@ -10,7 +12,7 @@ from .audio.vad import SileroVAD, SpeechEnd, SpeechStart, VADGate
 from .call_state import State
 from .calllog import CallLogger
 from .config import AppConfig
-from .pipeline import run_agent_turn, speak_greeting, speak_notice
+from .pipeline import _tools_for, run_agent_turn, speak_greeting, speak_notice
 from .providers.base import LLMProvider, STTProvider, TTSProvider
 from .transport.base import AudioFrame, AudioTransport, ControlMessage, Disconnected
 
@@ -75,8 +77,24 @@ class CallSession:
         )
         self._deadline = time.monotonic() + cfg.call.max_call_minutes * 60
 
+    def prompt_fingerprint(self) -> str:
+        """A short hash of the system prompt plus the tool schemas, logged once
+        per call.
+
+        Nothing else in the app pins these down, so a change in either is
+        invisible until a call behaves oddly. It is cheap, and it catches one
+        specific class of bug precisely: anything unrelated leaking into the
+        prompt. Voice and TTS settings in particular are resolved per call and
+        sit one field away from the persona, so a refactor that folds a voice
+        name or a tier into the prompt would move this hash and nothing else
+        would notice.
+        """
+        tools = _tools_for(self)
+        blob = self.cfg.persona.system_prompt + json.dumps(tools, sort_keys=True, default=str)
+        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
     async def run(self) -> None:
-        log.info("call %s started", self.session_id)
+        log.info("call %s started  prompt=%s", self.session_id, self.prompt_fingerprint())
         await self.transport.send_control(
             {
                 "type": "ready",

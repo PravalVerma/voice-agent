@@ -68,7 +68,8 @@ async def main() -> None:
             skipped += 1
             continue
         _, hit = await tts_cache.synthesize_cached(
-            tts, text, voice=voice, speaking_rate=cfg.tts.speaking_rate, sample_rate=cfg.tts.sample_rate
+            tts, text, provider=cfg.tts.provider, voice=voice,
+            speaking_rate=cfg.tts.speaking_rate, sample_rate=cfg.tts.sample_rate
         )
         if hit:
             hits += 1

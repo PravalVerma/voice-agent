@@ -14,7 +14,8 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, bots_store, call_logs, calllog, compliance, customers_store, post_call, tts_catalog
+from . import (auth, bots_store, call_logs, calllog, compliance, customers_store, post_call,
+               tts_cache, tts_catalog)
 from .audio.frames import FrameBuffer, wav_wrap
 from .collections_flow import CollectionsFlow
 from .audio.vad import SileroVAD, SpeechEnd, SpeechStart, VADGate
@@ -63,6 +64,10 @@ async def startup() -> None:
     # must not stop the server booting for the assistant bots that don't need
     # it, and a collections call refuses cleanly later if this never succeeded.
     asyncio.create_task(_warm_tools())
+    # Same fire-and-forget reasoning for the fixed script audio: a cold cache
+    # puts several serial synthesis round trips in front of the opening
+    # disclosure, and a provider that is down at boot must not stop the server.
+    asyncio.create_task(tts_cache.prewarm(cfg, build_tts))
     if cfg.llm_post.in_process:
         # Post-call work shares this process by default. Set [llm_post]
         # in_process = false and schedule scripts/run_post_jobs.py instead if
