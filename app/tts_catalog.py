@@ -124,8 +124,22 @@ def _dedupe_by_label(voices: list[dict]) -> list[dict]:
 
 
 def init_catalog(language_codes: list[str]) -> None:
+    """Fetches the catalog at startup. A failure here is not fatal: without
+    Google credentials there are simply no Standard/Neural2/Chirp3-HD voices to
+    offer, and the Voice Quality dropdown falls back to the Studio tier alone
+    (which runs on GEMINI_API_KEY and never touches this catalog). Letting the
+    exception escape would take the whole server down at boot over a credential
+    the standard pipeline needs but the Studio one does not."""
     global _catalog
-    _catalog = build_catalog(language_codes)
+    try:
+        _catalog = build_catalog(language_codes)
+    except Exception as e:
+        _catalog = {}
+        log.warning(
+            "tts catalog unavailable (%s) - Core/Enhanced/Premium will not be "
+            "offered; the Studio tier is unaffected", e
+        )
+        return
     for locale, tiers in _catalog.items():
         log.info("tts catalog: %s -> %s", locale, sorted(tiers.keys()))
 

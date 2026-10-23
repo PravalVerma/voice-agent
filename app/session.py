@@ -39,6 +39,7 @@ class CallSession:
         tts: TTSProvider,
         user_id: int | None = None,
         username: str | None = None,
+        flow=None,
     ):
         self.transport = transport
         self.cfg = cfg
@@ -46,6 +47,12 @@ class CallSession:
         self.llm = llm
         self.tts = tts
 
+        # A CollectionsFlow for a collections-mode bot, None for an ordinary
+        # assistant bot - which then takes exactly the path it always has.
+        self.flow = flow
+        #: set by the flow once an account is bound; the outbound compliance
+        #: screen in pipeline.py is inert while this is None
+        self.allowed_facts = None
         self.session_id = uuid.uuid4().hex[:8]
         self.state = State.LISTENING
         self.history: list[dict] = [{"role": "system", "content": cfg.persona.system_prompt}]
@@ -68,9 +75,14 @@ class CallSession:
                 "out_sample_rate": self.transport.out_sample_rate,
             }
         )
-        # no auto-played greeting - the agent waits for the caller to speak first,
-        # and introduces itself as part of its first reply (see system_prompt)
-        await self.set_state(State.LISTENING)
+        if self.flow is not None:
+            # A collections call opens before the caller says anything: the
+            # automated-assistant and recording disclosure has to come first.
+            await self.flow.start(self)
+        else:
+            # no auto-played greeting - the agent waits for the caller to speak
+            # first, and introduces itself in its first reply (see system_prompt)
+            await self.set_state(State.LISTENING)
 
         try:
             while True:
@@ -148,7 +160,10 @@ class CallSession:
 
     async def _run_turn(self, turn_id: int, utterance_pcm: bytes) -> None:
         try:
-            await run_agent_turn(self, turn_id, utterance_pcm)
+            if self.flow is not None:
+                await self.flow.handle_turn(self, turn_id, utterance_pcm)
+            else:
+                await run_agent_turn(self, turn_id, utterance_pcm)
         except asyncio.CancelledError:
             raise
         except Exception:

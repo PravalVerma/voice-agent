@@ -15,6 +15,11 @@ dependencies = [
     "httpx",
     "google-genai>=2.12.0",
     "boto3>=1.43.56",
+    # Windows ships no IANA time zone database, so zoneinfo cannot resolve
+    # "Asia/Kolkata" without this. The compliance calling-window check runs
+    # before every collections call - a missing tz database there would raise
+    # mid-call, so this is a main dependency and not an extra.
+    "tzdata",
 ]
 
 [project.optional-dependencies]
@@ -22,6 +27,10 @@ dependencies = [
 local-stt = ["faster-whisper"]
 # uv sync --extra openai      -> llm.provider = "openai"
 openai = ["openai"]
+# uv sync --extra collections -> bots with mode = "collections" (the tool server)
+# mcp 2.x renamed FastMCP to MCPServer; mcp_server/ targets the 2.x API, so
+# this floor is a real requirement rather than a conservative default.
+collections = ["mcp>=2.0"]
 # Ollama and Gemini need no extras (plain REST via httpx).
 
 [tool.uv]

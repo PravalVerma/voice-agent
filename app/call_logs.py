@@ -83,6 +83,10 @@ def _summarize(dir_path: Path) -> dict | None:
             "complete": True,
             "has_recording": recording is not None,
             "recording_s3_key": (recording or {}).get("s3_key"),
+            # present only on a call the compliance gates declined before it
+            # was placed - see calllog.log_refusal
+            "refused": meta.get("refused"),
+            "customer_id": meta.get("customer_id"),
         }
 
     # no meta.json - the process died/restarted mid-call (see CallLogger)
@@ -109,6 +113,8 @@ def _summarize(dir_path: Path) -> dict | None:
         # written at the end of a call
         "has_recording": False,
         "recording_s3_key": None,
+        "refused": None,
+        "customer_id": None,
     }
 
 

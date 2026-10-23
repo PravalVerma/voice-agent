@@ -121,3 +121,188 @@ llm_usd_per_mtok_out = 0.30
 tts_usd_per_mchar = 16.0     # fallback only (WaveNet rate) - apply_language() overwrites this
                               # per call with the real rate for whichever tier the caller picked
                               # (see app/tts_catalog.py: Standard 4.0, Wavenet/Neural2 16.0, Chirp3-HD 30.0)
+
+
+[compliance]
+# Enforcement for collections-mode bots (bots.mode = 'collections'). None of it
+# applies to ordinary assistant bots. Everything here is checked in code - the
+# system prompt deliberately does NOT repeat these rules, because a prompt
+# instruction is a hint and this is the gate.
+#
+# Regex values use TOML literal strings - single quotes, or ''' ''' when the
+# pattern itself contains an apostrophe. NEVER use double quotes here: TOML
+# processes escapes inside a basic string, so a '\b' word boundary silently
+# becomes a backspace character and the pattern then matches nothing at all.
+# Patterns are compiled at config load so a syntax error fails at startup with
+# one clear line - but a backspace is valid syntax and compiles fine, which is
+# why the quoting rule matters more than the compile check does.
+#
+# The calling window is evaluated in the BORROWER's local timezone
+# (customers.timezone), never the server's. Kept deliberately inside any
+# published bound so a config mistake fails safe rather than widening it.
+call_window_start = "09:00"
+call_window_end = "19:00"
+allowed_weekdays = [0, 1, 2, 3, 4, 5]  # Mon=0 .. Sun=6; Sunday excluded by default
+holidays = []                           # ["2026-10-20", ...] - borrower-local dates
+max_attempts_per_day = 1                # counts dialling attempts, not connections:
+                                        # the regulation caps contacting, so a call
+                                        # that rings out still spends one
+max_attempts_per_week = 3
+max_promise_days = 30                   # furthest-out promise-to-pay date accepted
+settlement_floor_pct = 75               # the hard floor from prompt.md; used to
+                                        # pre-expand the amounts screen_outbound
+                                        # accepts, since offers are made as percentages
+amount_tolerance_paise = 100            # rounding slack when matching a spoken amount
+
+# Spoken when a sentence is blocked before it reaches TTS. Must be safe to say
+# at any point in any call, since it can replace anything.
+[compliance.recovery_line]
+en = "Let me just confirm that and come back to you."
+hi = "मैं यह कन्फर्म करके आपको बताती हूँ।"
+
+[compliance.threats]
+# These must separate an asserted fact from a hedged possibility: the
+# collections script in prompt.md explicitly ALLOWS noting that continued
+# non-payment may move an account toward legal recovery. So the patterns match
+# certainty, and a match is skipped when a hedge marker sits within
+# hedge_window_chars of it (see compliance._hedged).
+hedge_window_chars = 60
+hedge_markers_en = ['may', 'might', 'could', 'possible', 'possibly']
+hedge_markers_hi = ['सकता', 'सकती', 'सकते', 'शायद', 'संभव']
+en = [
+  '(?i)\b(arrest|arrested|police|jail|f\.?i\.?r\.?)\b',
+  '(?i)\blegal action (will|shall|is going to) be\b',
+  '(?i)\bwe (are|will be) (filing|taking you to court)\b',
+  '(?i)\bfinal notice\b',
+  '(?i)\b(seize|seized|confiscate|attach) (your )?(property|house|home|car|assets?)\b',
+  '(?i)\b(tell|inform|call|contact|visit) (your )?(employer|boss|office|family|neighbou?rs?|relatives?)\b',
+]
+# Devanagari has no useful \b, so these use explicit non-letter lookarounds.
+hi = [
+  '(?<![ऀ-ॿ])(गिरफ़्तार|गिरफ्तार|पुलिस|जेल)(?![ऀ-ॿ])',
+  '(?<![ऀ-ॿ])(केस दर्ज|मुकदमा|कोर्ट केस)(?![ऀ-ॿ])',
+  '(?<![ऀ-ॿ])(कुर्की|ज़ब्त|जब्त)(?![ऀ-ॿ])',
+]
+
+[compliance.inbound]
+# One list per flag code per language. Precedence BETWEEN codes is fixed in
+# code, not here - self_harm must never be reorderable below anything else.
+self_harm_en = ['(?i)\b(kill myself|end my life|suicide|suicidal|no reason to live|better off dead)\b']
+self_harm_hi = ['(?<![ऀ-ॿ])(आत्महत्या|जान दे दूँगा|जान दे दूंगी|मर जाऊँगा)']
+distress_en = ['''(?i)\b(can'?t take (it|this) any ?more|i'?m breaking down|at the end of my rope)\b''']
+distress_hi = ['(?<![ऀ-ॿ])(बहुत परेशान|सह नहीं पा)']
+opt_out_en = ['''(?i)\b(stop calling|do ?n'?t call( me)? again|remove my number|do not call|never call me)\b''']
+opt_out_hi = ['(?<![ऀ-ॿ])(फ़ोन मत क|फोन मत क|दोबारा मत क|कॉल मत क)']
+dispute_en = ['''(?i)\b(not my (loan|debt|account)|i (never|did ?n'?t) (took?|take)|this is wrong|already paid)\b''']
+dispute_hi = ['(?<![ऀ-ॿ])(मेरा लोन नहीं|मैंने नहीं लिया|पहले ही भर)']
+wrong_number_en = ['(?i)\b(wrong number|no ?one (by that name|here called))\b']
+wrong_number_hi = ['(?<![ऀ-ॿ])(गलत नंबर|ग़लत नंबर)']
+third_party_en = ['''(?i)\b(he|she|they)('?s| is| are) not (here|available|home)\b''', '(?i)\bwho ?i?s (this|calling)\b']
+third_party_hi = ['(?<![ऀ-ॿ])(वो घर पर नहीं|यहाँ नहीं ह)']
+human_request_en = ['(?i)\b(real person|a human|speak to (a |an )?(agent|manager|supervisor|person))\b']
+human_request_hi = ['(?<![ऀ-ॿ])(किसी इंसान से|आदमी से बात)']
+injection_en = ['(?i)\b(ignore (all |your )?(previous |prior )?instructions|you are now|system prompt|disregard (your|all) (rules|instructions))\b']
+
+[compliance.numerals.hi]
+# Hindi 1-99 are irregular lexical items - there is no algorithm, only this
+# table (see app/text/numerals.py). Seeded with the scale words, the common
+# small numbers, and the figures the collections script actually uses. Expected
+# to GROW from real blocked_output evidence rather than be completed up front:
+# romanised Hindi has several spellings per number and no authority to
+# enumerate them, so entries are added when a real call proves one missing.
+"सौ" = 100
+"हज़ार" = 1000
+"हजार" = 1000
+"लाख" = 100000
+"करोड़" = 10000000
+"करोड" = 10000000
+"sau" = 100
+"hazaar" = 1000
+"hazar" = 1000
+"hajaar" = 1000
+"lakh" = 100000
+"lakhs" = 100000
+"crore" = 10000000
+"एक" = 1
+"दो" = 2
+"तीन" = 3
+"चार" = 4
+"पाँच" = 5
+"पांच" = 5
+"छह" = 6
+"सात" = 7
+"आठ" = 8
+"नौ" = 9
+"दस" = 10
+"बीस" = 20
+"पच्चीस" = 25
+"तीस" = 30
+"चालीस" = 40
+"पचास" = 50
+"साठ" = 60
+"पैंसठ" = 65
+"सत्तर" = 70
+"पचहत्तर" = 75
+"अस्सी" = 80
+"पचासी" = 85
+"नब्बे" = 90
+"पंचानवे" = 95
+"छियानवे" = 96
+"ek" = 1
+"do" = 2
+"teen" = 3
+"paanch" = 5
+"das" = 10
+"bees" = 20
+"pachees" = 25
+"pachas" = 50
+"saath" = 60
+"painsath" = 65
+"paisanth" = 65
+"pachhattar" = 75
+"nabbe" = 90
+"chhiyaanve" = 96
+
+[collections]
+# The scripted stages of a collections call. GREETING and VERIFY are never
+# model-generated and never paraphrased - the opening disclosure is a
+# regulatory requirement, not a style choice, so it is fixed text that an
+# admin can reword but the model can never rewrite.
+#
+# {customer} and {lender} are filled from the customer record. Lines carrying
+# them are synthesised per call; the rest are cached to disk once per
+# (language, voice) - splicing cached fragments around a name produces audibly
+# wrong intonation at the seams, so those lines are simply not cached.
+verify_strikes = 3           # after this many failures, offer a callback rather than
+                             # hanging up: Indic STT mangles spoken dates often enough
+                             # that a cold drop would fail real customers routinely
+max_tokens = 700             # NEGOTIATE turns carry tool schemas plus gpt-oss reasoning
+                             # tokens; the global [llm] 400 truncates a reply that also
+                             # emits a tool call
+
+[collections.scripts.en]
+greeting = "Hello, am I speaking with {customer}? This is an automated assistant calling on behalf of {lender}, and this call is recorded."
+verify_dob = "Before we go further, could you confirm your date of birth?"
+verify_phone_last4 = "Before we go further, could you confirm the last four digits of your registered phone number?"
+verify_pin = "Before we go further, could you confirm your account PIN?"
+verify_retry = "Sorry, that did not match our records. Could you try once more?"
+verify_failed = "I was not able to confirm your identity, so I will arrange for a callback instead. Thank you for your time."
+third_party = "No problem at all. I will try again another time. Thank you."
+optout_ack = "Understood. I have recorded that you do not want further calls, and you will not be contacted again. Thank you."
+# Gives a real resource and is honest about what this line is. The system has
+# no call centre to transfer to, and promising a handoff it cannot perform
+# would be worse than saying nothing.
+distress = "I am sorry you are going through this, and thank you for telling me. This is an automated line, so I cannot connect you to a person right now. If you would like to talk to someone, Tele-MANAS is available free on 14416, at any hour. I will close this call here and nobody will call you back about the account today."
+close = "Thank you for your time. Goodbye."
+
+[collections.scripts.hi]
+greeting = "नमस्ते, क्या मैं {customer} से बात कर रही हूँ? मैं {lender} की ओर से एक automated assistant बोल रही हूँ, और यह call record की जा रही है।"
+verify_dob = "आगे बढ़ने से पहले, क्या आप अपनी date of birth confirm कर सकते हैं?"
+verify_phone_last4 = "आगे बढ़ने से पहले, क्या आप अपने registered phone number के आख़िरी चार digits confirm कर सकते हैं?"
+verify_pin = "आगे बढ़ने से पहले, क्या आप अपना account PIN confirm कर सकते हैं?"
+verify_retry = "माफ़ कीजिए, यह हमारे record से match नहीं हुआ। क्या आप एक बार और कोशिश कर सकते हैं?"
+verify_failed = "मैं आपकी identity confirm नहीं कर पाई, इसलिए मैं callback arrange कर देती हूँ। आपके समय के लिए धन्यवाद।"
+third_party = "कोई बात नहीं। मैं किसी और समय try करूँगी। धन्यवाद।"
+optout_ack = "समझ गई। मैंने record कर लिया है कि आप आगे calls नहीं चाहते, अब आपको दोबारा contact नहीं किया जाएगा। धन्यवाद।"
+distress = "मुझे खेद है कि आप इस दौर से गुज़र रहे हैं, और बताने के लिए धन्यवाद। यह एक automated line है, इसलिए मैं आपको अभी किसी व्यक्ति से नहीं जोड़ सकती। अगर आप किसी से बात करना चाहें, तो Tele-MANAS किसी भी समय 14416 पर निःशुल्क उपलब्ध है। मैं यह call यहीं बंद कर रही हूँ और आज account के बारे में कोई आपको call नहीं करेगा।"
+close = "आपके समय के लिए धन्यवाद। नमस्ते।"

@@ -1,17 +1,20 @@
 """FastAPI app: serves the browser demo and the /ws call endpoint."""
 
+import datetime
 import logging
 import os
 import sqlite3
 import time
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, WebSocket
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, bots_store, call_logs, tts_catalog
+from . import auth, bots_store, call_logs, calllog, compliance, customers_store, tts_catalog
 from .audio.frames import FrameBuffer, wav_wrap
+from .collections_flow import CollectionsFlow
 from .audio.vad import SileroVAD, SpeechEnd, SpeechStart, VADGate
 from .config import ROOT, apply_language, build_call_vars, get_config, missing_secrets
 from .db import init_db
@@ -83,6 +86,26 @@ class AddUserBotBody(BaseModel):
 
 class SetAssignmentTiersBody(BaseModel):
     allowed_tiers: list[str] | None = None
+
+
+class CustomerBody(BaseModel):
+    customer_ref: str
+    name: str
+    phone: str
+    amount_due_rupees: float
+    due_date: str
+    lender_name: str
+    timezone: str = "Asia/Kolkata"
+    language_code: str | None = None
+    verify_kind: str = "dob"
+    verify_value: str = ""
+
+
+class CustomerFlagsBody(BaseModel):
+    opt_out: bool | None = None
+    dispute_open: bool | None = None
+    grievance_open: bool | None = None
+    hardship: bool | None = None
 
 
 class CreateBotBody(BaseModel):
@@ -294,6 +317,92 @@ async def api_set_bot_prompt(bot_id: int, body: BotPromptBody, admin: dict = Dep
     return {"ok": True}
 
 
+# ---- customers API -------------------------------------------------------------
+# Listing requires a login rather than admin: a user has to pick who they are
+# calling. Every mutation is admin-only, and nothing here ever returns
+# verify_value - customers_store strips it (see _public there).
+
+_VERIFY_KINDS = ("dob", "phone_last4", "pin")
+
+
+def _validate_customer(body: CustomerBody) -> None:
+    if body.verify_kind not in _VERIFY_KINDS:
+        raise HTTPException(status_code=400, detail=f"verify_kind must be one of {list(_VERIFY_KINDS)}")
+    if body.amount_due_rupees < 0:
+        raise HTTPException(status_code=400, detail="amount due can't be negative")
+    try:
+        datetime.date.fromisoformat(body.due_date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="due_date must be YYYY-MM-DD")
+    # Fail here rather than at call time: an unresolvable timezone makes the
+    # calling-window gate fail closed, which looks like a mysteriously
+    # un-callable customer rather than a typo in an import.
+    try:
+        ZoneInfo(body.timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(status_code=400, detail=f"unknown timezone {body.timezone!r}")
+
+
+def _customer_fields(body: CustomerBody) -> dict:
+    return {
+        "customer_ref": body.customer_ref.strip(),
+        "name": body.name.strip(),
+        "phone": body.phone.strip(),
+        "timezone": body.timezone,
+        "language_code": body.language_code,
+        "amount_due_paise": int(round(body.amount_due_rupees * 100)),
+        "due_date": body.due_date,
+        "lender_name": body.lender_name.strip(),
+        "verify_kind": body.verify_kind,
+        "verify_value": body.verify_value.strip(),
+    }
+
+
+@app.get("/api/customers")
+async def api_list_customers(user: dict = Depends(auth.require_login)) -> list[dict]:
+    return customers_store.list_customers()
+
+
+@app.post("/api/customers")
+async def api_create_customer(body: CustomerBody, admin: dict = Depends(auth.require_admin)) -> dict:
+    _validate_customer(body)
+    try:
+        return customers_store.create_customer(**_customer_fields(body))
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="a customer with that reference already exists")
+
+
+@app.put("/api/customers/{customer_id}")
+async def api_update_customer(customer_id: int, body: CustomerBody,
+                              admin: dict = Depends(auth.require_admin)) -> dict:
+    _validate_customer(body)
+    if customers_store.get_customer(customer_id) is None:
+        raise HTTPException(status_code=404, detail="no such customer")
+    fields = _customer_fields(body)
+    if not fields["verify_value"]:
+        # an empty box in the edit form means "leave it as it is", not "clear
+        # the identity answer" - the UI never receives it, so it cannot resend it
+        fields.pop("verify_value")
+    customers_store.update_customer(customer_id, **fields)
+    return {"ok": True}
+
+
+@app.put("/api/customers/{customer_id}/flags")
+async def api_set_customer_flags(customer_id: int, body: CustomerFlagsBody,
+                                 admin: dict = Depends(auth.require_admin)) -> dict:
+    if customers_store.get_customer(customer_id) is None:
+        raise HTTPException(status_code=404, detail="no such customer")
+    for flag, value in body.model_dump(exclude_none=True).items():
+        customers_store.set_flag(customer_id, flag, value)
+    return {"ok": True}
+
+
+@app.delete("/api/customers/{customer_id}")
+async def api_delete_customer(customer_id: int, admin: dict = Depends(auth.require_admin)) -> dict:
+    customers_store.delete_customer(customer_id)
+    return {"ok": True}
+
+
 # ---- users API (admin-only) ----------------------------------------------------
 
 @app.get("/api/users")
@@ -463,6 +572,48 @@ async def ws_call(websocket: WebSocket) -> None:
                 )
                 await transport.close()
                 return
+        # Pre-call compliance gates. A customer_id is what makes this a
+        # collections call: an ordinary assistant call has no borrower and no
+        # window to be outside of. Both gates run server-side off the stored
+        # record, never off anything the client sent - the client supplies only
+        # which customer, and even that is re-read from the database here.
+        customer = None
+        try:
+            customer_id = int(event.data.get("customer_id"))
+        except (TypeError, ValueError):
+            customer_id = None
+        if customer_id is not None:
+            cfg_now = get_config()
+            customer = customers_store.get_customer(customer_id)
+            if customer is None:
+                decision = compliance.Decision(
+                    False, "unknown_customer", "no such customer record", str(customer_id)
+                )
+            else:
+                decision = compliance.check_calling_window(customer["timezone"], cfg=cfg_now)
+                if decision.ok:
+                    decision = compliance.check_contact_eligibility(customer_id, cfg=cfg_now)
+            if not decision.ok:
+                # Refused before anything is allocated: no recorder, no
+                # providers, no session. The attempt is still recorded, because
+                # a refusal is itself a contact decision an auditor will ask
+                # about, and it leaves a call-log directory for the same reason.
+                compliance.record_contact_event(customer_id, "refused", reason=decision.code)
+                calllog.log_refusal(
+                    cfg_now, decision,
+                    user_id=user["id"], username=user["username"],
+                    customer_id=customer_id, language=language,
+                    tts_tier=event.data.get("tts_tier"),
+                )
+                await transport.send_control(
+                    {"type": "error", "message": "call not permitted: " + decision.detail}
+                )
+                await transport.close()
+                return
+            # The cap counts attempts, so this is written before the call
+            # connects rather than after it succeeds.
+            compliance.record_contact_event(customer_id, "attempt")
+
         # only real calls are recorded - the echo/vad modes above are
         # diagnostics, and a loopback of your own mic isn't worth archiving
         if get_config().call.record_calls:
@@ -482,6 +633,7 @@ async def ws_call(websocket: WebSocket) -> None:
             event.data.get("tts_voice"),
             user["id"],
             user["username"],
+            customer,
         )
     else:
         await transport.send_control({"type": "error", "message": f"unknown mode '{mode}'"})
@@ -573,6 +725,7 @@ async def run_call(
     tts_voice: str | None = None,
     user_id: int | None = None,
     username: str | None = None,
+    customer: dict | None = None,
 ) -> None:
     # every bot supports every pipeline - which one runs is purely a per-call
     # choice, picked via the Voice Quality dropdown's synthetic "gemini_live"
@@ -595,7 +748,11 @@ async def run_call(
         stt = build_stt(cfg)
         llm = build_llm(cfg)
         tts = build_tts(cfg)
-        session = CallSession(transport, cfg, stt, llm, tts, user_id=user_id, username=username)
+        # A bound customer is what makes this a collections call. The gates in
+        # ws_call have already cleared it by this point.
+        flow = CollectionsFlow(cfg, customer) if customer else None
+        session = CallSession(transport, cfg, stt, llm, tts, user_id=user_id,
+                              username=username, flow=flow)
     except Exception as e:  # unknown provider, bad SDK creds, VAD/log setup failure, etc.
         log.exception("failed to set up the call")
         await transport.send_control({"type": "error", "message": f"call setup failed: {e}"})

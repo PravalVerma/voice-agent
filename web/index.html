@@ -84,6 +84,12 @@
             <summary>Call Details</summary>
             <div class="call-vars-body">
               <div class="field">
+                <label for="cv-customer">Account</label>
+                <select id="cv-customer">
+                  <option value="">None - general assistant call</option>
+                </select>
+              </div>
+              <div class="field">
                 <label for="cv-customer-name">Customer name *</label>
                 <input id="cv-customer-name" type="text" placeholder="e.g. Kapil" required>
               </div>
@@ -91,6 +97,7 @@
                 <label for="cv-company-name">Company name *</label>
                 <input id="cv-company-name" type="text" placeholder="e.g. Nordres Capital" required>
               </div>
+              <p class="call-vars-hint" id="cv-account-hint" style="display:none"></p>
               <p class="call-vars-hint">* required to start a session</p>
             </div>
           </details>

@@ -4,6 +4,7 @@ target of <= Rs 30/call. Not exact billing - just enough to catch a runaway call
 import json
 import logging
 import time
+import uuid
 
 from . import s3_archive
 from .audio.frames import wav_wrap
@@ -11,6 +12,65 @@ from .config import ROOT, AppConfig
 from .tts_catalog import QUALITY_LABEL, tier_of
 
 log = logging.getLogger("agent")
+
+
+def log_refusal(
+    cfg: AppConfig,
+    decision,
+    *,
+    user_id: int | None = None,
+    username: str | None = None,
+    customer_id: int | None = None,
+    language: str | None = None,
+    tts_tier: str | None = None,
+) -> str:
+    """Write a complete, closed call-log directory for a call that was refused
+    before it started. Returns the directory name.
+
+    A compliance refusal has to leave a record. CallLogger is constructed
+    inside CallSession, so a call blocked in ws_call never reaches it and would
+    otherwise vanish entirely - leaving no evidence that the system declined,
+    which is exactly what an auditor comes looking for. The directory is named
+    and shaped like any other call so it lists and opens in Advanced Settings
+    with no special-casing anywhere downstream.
+    """
+    session_id = uuid.uuid4().hex[:8]
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    path = ROOT / cfg.call.log_dir / f"{ts}_{session_id}"
+    path.mkdir(parents=True, exist_ok=True)
+
+    with open(path / "transcript.jsonl", "a", encoding="utf-8") as fh:
+        for event in (
+            {"type": "call_started", "user_id": user_id, "username": username},
+            {
+                "type": "compliance_flag",
+                "code": decision.code,
+                "severity": "high",
+                "detail": decision.detail,
+                "evidence": decision.evidence,
+                "stage": "pre_call",
+            },
+        ):
+            fh.write(json.dumps({"t": 0.0, **event}) + "\n")
+
+    meta = {
+        "session_id": session_id,
+        "user_id": user_id,
+        "username": username,
+        "customer_id": customer_id,
+        "language": language or cfg.stt.language,
+        "tts_tier": tts_tier,
+        "duration_s": 0.0,
+        "turn_count": 0,
+        "usage": {},
+        "cost_usd": {"stt": 0.0, "llm": 0.0, "tts": 0.0, "total": 0.0},
+        "cost_inr": 0.0,
+        "recording": None,
+        "refused": {"code": decision.code, "detail": decision.detail, "evidence": decision.evidence},
+    }
+    (path / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    log.info("call refused before dialling (%s): %s", decision.code, decision.detail)
+    return path.name
 
 
 class CallLogger:

@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config.toml"
@@ -74,6 +74,102 @@ class CallConfig(BaseModel):
     record_calls: bool = True
 
 
+class ComplianceConfig(BaseModel):
+    """Collections-mode enforcement. Read by app/compliance.py; ignored entirely
+    for ordinary assistant bots.
+
+    Patterns are compiled here, at config load, so a broken one fails at startup
+    with a clear line instead of raising inside a live call."""
+
+    call_window_start: str = "09:00"
+    call_window_end: str = "19:00"
+    allowed_weekdays: list[int] = [0, 1, 2, 3, 4, 5]
+    holidays: list[str] = []
+    max_attempts_per_day: int = Field(1, ge=1)
+    max_attempts_per_week: int = Field(3, ge=1)
+    max_promise_days: int = Field(30, ge=1)
+    settlement_floor_pct: int = Field(75, ge=1, le=100)
+    amount_tolerance_paise: int = Field(100, ge=0)
+    recovery_line: dict[str, str] = {}
+    threats: dict = {}
+    inbound: dict[str, list[str]] = {}
+    numerals: dict = {}
+
+    @field_validator("call_window_start", "call_window_end")
+    @classmethod
+    def _valid_time(cls, v: str) -> str:
+        try:
+            hh, mm = v.split(":")
+            if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+                raise ValueError
+        except (ValueError, AttributeError):
+            raise ValueError(f"must be HH:MM, got {v!r}")
+        return v
+
+    @field_validator("allowed_weekdays")
+    @classmethod
+    def _valid_weekdays(cls, v: list[int]) -> list[int]:
+        if not v:
+            raise ValueError("at least one weekday must be allowed, or no call can ever be placed")
+        if any(d < 0 or d > 6 for d in v):
+            raise ValueError("weekdays are 0 (Monday) to 6 (Sunday)")
+        return v
+
+    @field_validator("threats", "inbound")
+    @classmethod
+    def _compilable(cls, v, info):
+        """Every regex must compile AND be free of control characters.
+
+        The control-character check is not paranoia. TOML basic strings (double
+        quotes) process escapes, so a pattern written "\b(stop calling)\b"
+        decodes to a backspace rather than a word boundary - it compiles
+        perfectly and then matches nothing, silently disabling that screen.
+        Patterns must use TOML literal strings (single quotes, or triple single
+        quotes when the pattern contains an apostrophe)."""
+        import re as _re
+
+        def check(patterns, where):
+            for pat in patterns:
+                if any(ch in pat for ch in ""):
+                    raise ValueError(
+                        f"{where}: pattern contains a control character - it was written with "
+                        f"double quotes, which makes TOML read \b as a backspace. Use single "
+                        f"quotes (or  if it contains an apostrophe)."
+                    )
+                try:
+                    _re.compile(pat)
+                except _re.error as e:
+                    raise ValueError(f"{where}: invalid regex {pat!r} - {e}")
+
+        for key, val in v.items():
+            if isinstance(val, list) and val and isinstance(val[0], str):
+                if key.startswith("hedge_markers"):
+                    continue  # plain words, not patterns
+                check(val, f"{info.field_name}.{key}")
+        return v
+
+
+class CollectionsConfig(BaseModel):
+    """Scripted-stage settings. Scripts are per language, keyed by stage."""
+
+    verify_strikes: int = Field(3, ge=1)
+    max_tokens: int = Field(700, ge=1)
+    scripts: dict[str, dict[str, str]] = {}
+
+    def script(self, language: str, key: str, **fields) -> str:
+        """One script line, falling back to English when a language lacks it.
+
+        Falling back is deliberate: a missing translation should degrade to a
+        line in the wrong language, not to silence at the exact moment the
+        regulatory disclosure is due.
+        """
+        table = self.scripts.get(language) or self.scripts.get("en") or {}
+        text = table.get(key) or (self.scripts.get("en") or {}).get(key) or ""
+        for name, value in fields.items():
+            text = text.replace("{" + name + "}", str(value))
+        return text
+
+
 class CostConfig(BaseModel):
     usd_to_inr: float = 88.0
     stt_usd_per_hour: float = 0.04
@@ -106,6 +202,8 @@ class AppConfig(BaseModel):
     tts: TTSConfig = TTSConfig()
     call: CallConfig = CallConfig()
     cost: CostConfig = CostConfig()
+    compliance: ComplianceConfig = ComplianceConfig()
+    collections: CollectionsConfig = CollectionsConfig()
     default_language: str = "en"
     languages: list[LanguageConfig] = []
 

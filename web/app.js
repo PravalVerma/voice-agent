@@ -31,7 +31,63 @@ let isMuted = false;
 const cvCustomerName = document.getElementById("cv-customer-name");
 const cvCompanyName = document.getElementById("cv-company-name");
 const companyNameField = document.getElementById("company-name-field");
+const cvCustomer = document.getElementById("cv-customer");
+const cvAccountHint = document.getElementById("cv-account-hint");
 const callVarInputs = [cvCustomerName, cvCompanyName];
+// Picking an account turns this into a collections call: the server runs the
+// calling-window and eligibility gates against the stored record and can
+// refuse before anything is allocated. The name and lender are then filled
+// from that record and locked, because the figures the compliance screen
+// checks against come from the same row - letting someone retype the name
+// here would let the spoken call and the audited record drift apart.
+let customers = [];
+
+async function loadCustomers() {
+  try {
+    customers = await fetchJSON("/api/customers");
+  } catch (err) {
+    customers = [];
+    return;
+  }
+  for (const c of customers) {
+    const opt = document.createElement("option");
+    opt.value = String(c.id);
+    opt.textContent = `${c.name} - ${c.customer_ref}`;
+    cvCustomer.appendChild(opt);
+  }
+}
+
+function selectedCustomer() {
+  return customers.find((c) => String(c.id) === cvCustomer.value) || null;
+}
+
+function applyCustomerSelection() {
+  const c = selectedCustomer();
+  if (!c) {
+    cvCustomerName.readOnly = false;
+    cvCompanyName.readOnly = false;
+    cvAccountHint.style.display = "none";
+    refreshCallBtnAvailability();
+    return;
+  }
+  cvCustomerName.value = c.name;
+  cvCompanyName.value = c.lender_name;
+  cvCustomerName.readOnly = true;
+  cvCompanyName.readOnly = true;
+  const due = Number(c.rupees).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+  const blocks = [];
+  if (c.opt_out) blocks.push("opted out");
+  if (c.dispute_open) blocks.push("dispute open");
+  if (c.grievance_open) blocks.push("grievance open");
+  if (c.hardship) blocks.push("hardship");
+  cvAccountHint.textContent =
+    `Outstanding Rs ${due}, due ${c.due_date}, ${c.timezone}` +
+    (blocks.length ? ` - flagged: ${blocks.join(", ")}` : "");
+  cvAccountHint.style.display = "block";
+  refreshCallBtnAvailability();
+}
+
+cvCustomer.addEventListener("change", applyCustomerSelection);
 
 let isCollegeVidyaUser = false;
 
@@ -90,6 +146,11 @@ let playCtx = null;
 let playerNode = null;
 let currentTurnId = -1;
 let live = false;
+// Survives endCall(), which is the point: the server refuses a call by sending
+// an error and then closing, and onclose -> endCall() used to overwrite the
+// reason with "call ended" before anyone could read it. A compliance refusal
+// is the one message the caller most needs to keep seeing.
+let stickyError = null;
 
 function setStatus(text) { statusLine.textContent = text; }
 
@@ -425,6 +486,7 @@ window.currentUserPromise.then((user) => {
   } else {
     loadMyBots();
   }
+  loadCustomers();
   refreshCallBtnAvailability();
 });
 
@@ -540,6 +602,7 @@ function handleControl(msg) {
       setStatus(`utterance captured: ${msg.duration_s}s${msg.forced ? " (max length)" : ""}`);
       break;
     case "error":
+      stickyError = msg.message;
       setStatus("error: " + msg.message);
       break;
   }
@@ -548,6 +611,7 @@ function handleControl(msg) {
 async function startCall() {
   // defensive - the button is disabled until both are true anyway
   if (!callVarsFilled() || (!isAdminUser && !myAssignments.length)) return;
+  stickyError = null;
   callBtn.disabled = true;
   startSessionBtn.disabled = true;
   botSelect.disabled = true;
@@ -555,6 +619,7 @@ async function startCall() {
   setGenderControlsDisabled(true);
   setVoiceControlsDisabled(true);
   callVarInputs.forEach((el) => (el.disabled = true));
+  cvCustomer.disabled = true;
   clearTranscript();
   try {
     setStatus("requesting microphone...");
@@ -573,6 +638,7 @@ async function startCall() {
     setGenderControlsDisabled(false);
     setVoiceControlsDisabled(false);
     callVarInputs.forEach((el) => (el.disabled = false));
+    cvCustomer.disabled = false;
     refreshCallBtnAvailability();
     return;
   }
@@ -595,6 +661,7 @@ async function startCall() {
       gender: selectedGender,
       tts_tier: selectedTier,
       tts_voice: selectedVoiceName,
+      customer_id: cvCustomer.value ? Number(cvCustomer.value) : null,
       customer_name: cvCustomerName.value.trim(),
       company_name: isCollegeVidyaUser ? (cvCompanyName.value.trim() || "College Vidya") : cvCompanyName.value.trim(),
     }));
@@ -645,10 +712,11 @@ function endCall() {
   setGenderControlsDisabled(false);
   setVoiceControlsDisabled(false);
   callVarInputs.forEach((el) => (el.disabled = false));
+  cvCustomer.disabled = false;
   refreshCallBtnAvailability();
   stopTimer();
   setLamp("idle");
-  setStatus("call ended");
+  setStatus(stickyError ? "error: " + stickyError : "call ended");
 }
 
 callBtn.addEventListener("click", () => { if (!live) startCall(); });
