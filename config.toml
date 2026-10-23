@@ -111,11 +111,37 @@ history_max_turns = 4        # EXCHANGES (a caller turn plus the reply to it) ke
                               # apply on this tier (see scripts/check_cache.py).
 
 [tts]
-provider = "google"          # google
+# edge is DEVELOPMENT SCAFFOLDING, not a shipping tier: an unofficial client of
+# a read-aloud endpoint with no SLA and no documented rate limits. It is the
+# default because the Google Cloud account is not activated, and without it the
+# cascaded pipeline cannot speak at all. Switching back to "google" restores the
+# old behaviour - the catalog code is untouched - though the Voice Quality
+# dropdown stays collapsed to one cascaded entry either way.
+provider = "edge"            # edge | google | gemini
 # no static "voice" here anymore - it's resolved per call from the caller's
 # language/tier/gender choice against the live Google voice catalog
 speaking_rate = 1.0
 sample_rate = 24000
+
+[tts.edge]
+timeout_s = 10.0             # give up on one request and speak the fallback line
+failure_threshold = 3        # consecutive failures before synthesis is paused
+cooldown_s = 60.0            # ...for this long, then one request re-tests it
+                             # Without the pause, an endpoint that has started
+                             # refusing costs every turn its full timeout before
+                             # the caller hears the apology.
+
+# Verified against the live voice list on 2026-10-23 - the catalog changes, so
+# re-check with `uv run edge-tts --list-voices` rather than trusting this.
+# One voice per gender per language; the dropdown shows only a character word
+# ("Warm"/"Deep") and the browser only ever sees an opaque "en-female" id.
+[tts.edge.voices.en]
+female = "en-IN-NeerjaNeural"
+male = "en-IN-PrabhatNeural"
+
+[tts.edge.voices.hi]
+female = "hi-IN-SwaraNeural"
+male = "hi-IN-MadhurNeural"
 
 [call]
 max_call_minutes = 10
