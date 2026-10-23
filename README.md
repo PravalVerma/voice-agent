@@ -4,8 +4,8 @@ Real-time AI voice agent that runs locally (FastAPI + browser WebSocket). Two
 interchangeable call pipelines, picked per call from the Voice Quality dropdown:
 
 - **Standard (cascaded)**: browser microphone → Silero VAD → Whisper STT (Groq) →
-  LLM (Groq `openai/gpt-oss-20b` by default) → Google Cloud TTS → browser speaker.
-  Three priced synthesis tiers, shown to callers as **Core / Enhanced / Premium**.
+  LLM (Groq `openai/gpt-oss-20b` by default) → TTS → browser speaker. One synthesis
+  tier, shown to callers as **Standard**.
 - **Studio (Gemini Live)**: a single continuous Gemini Live API session handles
   speech in and out directly — no separate STT/LLM/TTS legs. Picked by choosing
   the **Studio** tier in the same dropdown.
@@ -38,7 +38,9 @@ Required credentials in `.env` (for the default providers):
 
 - `GROQ_API_KEY` — from https://console.groq.com/keys (STT + LLM)
 - `GOOGLE_APPLICATION_CREDENTIALS` — path to a Google Cloud service-account JSON
-  with the **Text-to-Speech API** enabled
+  with the **Text-to-Speech API** enabled. **Not needed for the default config**,
+  which uses the keyless `edge` TTS provider; required only if you set
+  `[tts] provider = "google"`.
 - `GEMINI_API_KEY` — from https://aistudio.google.com/apikey. Required for any bot
   whose call uses the Studio (Gemini Live) tier, or a per-bot pipeline set to
   Gemini. Billed against that Google AI Studio project's own spending cap —
@@ -58,7 +60,7 @@ uv run uvicorn app.main:app --port 8000
 Open http://localhost:8000 — you'll land on **Login**. Sign in, then:
 
 - **Voice Assistant** (`/`) — the call UI: pick a bot, language, Voice Quality tier
-  (Core/Enhanced/Premium/Studio) and gender, fill in Call Details, press
+  (Standard/Studio) and gender, fill in Call Details, press
   **Start New Session**, allow the microphone, and talk. (Browsers only grant
   mic access on `localhost` or over HTTPS, so run it from `localhost`.)
 - **Advanced Settings** (gear icon in the topbar, admin-only, `/settings`) — a
@@ -83,16 +85,27 @@ URL, e.g. `http://localhost:8000/?mode=echo`):
 
 ## Voice quality tiers
 
-Four tiers appear in the Voice Quality dropdown. The first three are Google Cloud
-TTS quality levels layered on the standard (cascaded) pipeline; the fourth switches
-the whole call to the Gemini Live pipeline instead:
+Two tiers appear in the Voice Quality dropdown. The first runs the standard
+(cascaded) pipeline; the second switches the whole call to the Gemini Live
+pipeline instead:
 
 | Caller sees | What it actually is | Rate |
 |---|---|---|
-| Core | Google Cloud TTS, `Standard` voices | $4 / M characters |
-| Enhanced | Google Cloud TTS, `Neural2` voices | $16 / M characters |
-| Premium | Google Cloud TTS, `Chirp3-HD` voices | $30 / M characters |
+| Standard | The cascaded pipeline, on whichever `[tts]` provider is configured | $0 on the default `edge` provider |
 | Studio | Gemini Live (native audio-to-audio) | $3 / $12 per M audio tokens (in/out) |
+
+The cascaded tier used to be three Google Cloud quality levels (Core / Enhanced /
+Premium). They were collapsed into one entry because the TTS provider, not a
+per-call quality pick, is what now determines the voice. Entitlements stored
+under the old names are migrated automatically on startup; old call logs keep
+whatever name they were written with.
+
+> **The default `edge` TTS provider is development scaffolding, not a shipping
+> tier.** It is an unofficial client of a read-aloud endpoint: no SLA, no
+> documented rate limits, and it can change or break without notice. It is the
+> default because it needs no API key, which is what lets the cascaded pipeline
+> run at all while the paid account is inactive. Swapping in a paid provider is
+> a `[tts] provider` change plus one file under `app/providers/`.
 
 An admin can restrict which tiers a given user is allowed to pick, per bot
 assignment, from Advanced Settings → Users.
@@ -161,7 +174,9 @@ in `.env` must be flipped to `true` if this is ever served over HTTPS — left
 | `[llm]` | `ollama` | `llama3.2` (needs a local Ollama server) | - |
 | `[llm]` | `openai` | `gpt-4o-mini` | `uv sync --extra openai` |
 | `[llm]` | `gemini` | `gemini-2.0-flash` | - |
-| `[tts]` | `google` (default) | voice name, chosen per call from the live catalog | - |
+| `[tts]` | `edge` (default) | voice name, from the `[tts.edge.voices]` map | - |
+| `[tts]` | `google` | voice name, chosen per call from the live catalog | needs `GOOGLE_APPLICATION_CREDENTIALS` |
+| `[tts]` | `gemini` | `Kore`, `Puck`, ... (a bare Gemini voice name) | needs `GEMINI_API_KEY` |
 
 Ollama and Gemini talk over plain REST (no extra installs); Ollama needs
 `OLLAMA_BASE_URL` in `.env` if it isn't on `http://localhost:11434`, and Gemini
@@ -196,7 +211,8 @@ replies, barge-ins) and `meta.json`, written on a clean call end:
   "session_id": "c76b1224",
   "user_id": 3,
   "username": "arcil",
-  "tts_tier": "Enhanced",
+  "tts_tier": "Standard",
+  "tts_provider": "edge",
   "duration_s": 187.3,
   "turn_count": 9,
   "usage": {"stt_requests": 4, "stt_billed_seconds": 40.0, "llm_input_tokens": 812, "llm_output_tokens": 210, "tts_chars": 640},

@@ -9,8 +9,9 @@ Real-time AI voice agent (FastAPI + browser WebSocket), run locally at
 Voice Quality dropdown:
 
 - **Standard (cascaded)**: browser mic → Silero VAD → Whisper STT (Groq) → LLM (Groq
-  `openai/gpt-oss-20b` by default) → Google Cloud TTS → browser speaker. Three priced
-  synthesis tiers, shown to callers as **Core / Enhanced / Premium**.
+  `openai/gpt-oss-20b` by default) → TTS → browser speaker. One synthesis tier,
+  shown to callers as **Standard**. The TTS backend is a `[tts] provider` choice
+  (`edge` by default, `google`/`gemini` also supported), not a per-call pick.
 - **Studio (Gemini Live)**: a single continuous Gemini Live API session handles speech
   in and out directly — no separate STT/LLM/TTS legs. Picked via the **Studio** tier in
   the same dropdown, implemented entirely in `app/live_session.py`, not through the
@@ -43,6 +44,7 @@ uv run python scripts/check_stt.py sample.wav --local       # ...via faster-whis
 uv run python scripts/check_llm.py "Tell me a joke"         # stream LLM tokens + TTFT
 uv run python scripts/check_llm.py "hi" --provider ollama   # ...against another provider
 uv run python scripts/check_tts.py "Hello there!"           # synthesize out.wav
+uv run python scripts/check_tts.py "नमस्ते" --language hi    # ...in another language/voice
 uv run python scripts/check_vad.py sample.wav               # print detected speech segments
 uv run python scripts/check_pipeline.py question.wav        # full standard pipeline offline -> reply.wav
 uv run python scripts/check_regressions.py                  # every fixed defect, no network needed
@@ -77,8 +79,9 @@ app/
   auth.py         password hashing, session tokens, require_login/require_admin, user-bot assignments
   db.py           SQLite connection + schema (users, sessions, bots, bot_prompts, user_bots) -> data/app.db
   bots_store.py   admin-registered "bots" (named, per-language prompt sets - bots/bot_prompts tables)
-  tts_catalog.py  live Google voice catalog (tier/gender/quality-label per language),
-                  plus the synthetic Studio/Gemini Live "tier" definition
+  tts_catalog.py  builds the single cascaded tier from whichever [tts] provider is
+                  configured, plus the synthetic Studio/Gemini Live "tier" definition.
+                  The Google voice catalog lives here too, behind the "google" branch.
   call_logs.py    read-only: lists/parses logs/calls/ for the admin Call Logs page
   calllog.py      per-call transcript writer + cost estimate, written to logs/calls/ as the call happens
   call_state.py   State enum, split out so session.py and pipeline.py can both import it without a cycle
@@ -113,7 +116,7 @@ mcp_server/       standalone MCP tool server over stdio; imports app.db/config/c
                   never app.main. Tools take no customer_id/session_id/phone - those are
                   bound into the process at spawn, so the model cannot supply or forge them.
 scripts/          check_stt/llm/tts/vad/pipeline.py - test each stage in isolation
-docs/             misc reference docs (voice tier history, architecture notes)
+docs/             misc reference docs (archived language prompts)
 ```
 
 ### Standard pipeline flow
@@ -135,7 +138,7 @@ Entirely separate code path (`live_session.py`): one continuous bidirectional Ge
 Live API session does speech-in/speech-out directly, with its own
 activity-detection/barge-in tuning (not the `[vad]` config block). Selected via the
 synthetic `gemini_live` tier returned by `tts_catalog.gemini_voice_tier()`, which is
-appended to the dropdown alongside the real Google TTS tiers — not a separate UI
+appended to the dropdown alongside the single cascaded tier — not a separate UI
 control or bot setting.
 
 ### Config and prompts
@@ -191,6 +194,30 @@ anyway would be the compliance layer quietly switched off.
 
 Things worth knowing before changing any of it:
 
+- **The default `edge` TTS provider is development scaffolding, not a shipping
+  tier.** It is an unofficial client of a read-aloud endpoint - no SLA, no
+  documented rate limits, and it can break without notice. It is the default
+  only because it needs no API key, which is what lets the cascaded pipeline
+  run while the Google Cloud account is inactive. Treat a paid replacement
+  (likely Sarvam Bulbul) as the real destination: the voice map, timeout and
+  breaker are already in `config.toml`, so it should be a `[tts] provider`
+  change plus one file in `app/providers/`.
+- **Its output format is MP3 and cannot be changed** - `Communicate` has no
+  output-format parameter - so the PCM16 the transport wants is decoded with
+  PyAV, which ships its own FFmpeg in the wheel. There is no system `ffmpeg`
+  prerequisite, and adding one would be a step backwards.
+- **Connection reuse is not available.** Setup dominates (~630 ms fixed, vs
+  ~200 ms marginal for 15x the text), but `Communicate.stream()` owns and
+  closes any connector it is handed, so a shared one fails the second request.
+  The two levers that do work are the streaming path in `_speak_text` and the
+  on-disk cache for fixed script lines.
+- **Voice short names never leave the server.** `/tts-options` hands the browser
+  opaque ids (`en-female`) that `resolve_voice` maps back, so the no-branding
+  rule holds for API responses and not just rendered text.
+- **The TTS cache key includes the provider.** Without it, fixed script lines
+  (greeting, disclosure, tool filler) keep playing in the previous provider's
+  voice while live replies use the new one - audible to a caller, and invisible
+  under `?mode=vad`, which plays no audio at all.
 - **Groq's free tier does not cache prompt prefixes.** Measured 2026-10-23 with
   `scripts/check_cache.py`: `cached_tokens` is 0 at every prefix size and
   `prompt_tokens_details` comes back `None`. The fixed system prompt is kept
