@@ -53,6 +53,15 @@ class CallSession:
         #: set by the flow once an account is bound; the outbound compliance
         #: screen in pipeline.py is inert while this is None
         self.allowed_facts = None
+        #: McpClient for a collections call, None otherwise
+        self.mcp = None
+        #: idempotency cache, keyed in code - see pipeline._result_key
+        self.tool_results: dict[str, dict] = {}
+        #: whether any audio has gone out this turn, so the tool filler is only
+        #: used to cover a gap that the caller would otherwise hear as silence
+        self.spoken_anything = False
+        #: tool executions that must outlive the turn that started them
+        self._detached: set[asyncio.Task] = set()
         self.session_id = uuid.uuid4().hex[:8]
         self.state = State.LISTENING
         self.history: list[dict] = [{"role": "system", "content": cfg.persona.system_prompt}]
@@ -107,6 +116,14 @@ class CallSession:
                     pass
                 except Exception:
                     log.exception("call %s: error while cancelling the in-flight turn", self.session_id)
+            if self._detached:
+                # Let tool writes finish before the process stops caring. This
+                # is what makes the barge-in guarantee real.
+                log.info("call %s: waiting for %d in-flight tool call(s)",
+                         self.session_id, len(self._detached))
+                await asyncio.wait(set(self._detached), timeout=5.0)
+            if self.mcp is not None:
+                await self.mcp.aclose()
             log.info("call %s ended", self.session_id)
             meta = self.call_logger.finalize()
             log.info("call %s cost estimate: Rs %.2f (%s)", self.session_id, meta["cost_inr"], meta["usage"])
@@ -186,14 +203,60 @@ class CallSession:
             log.exception("call %s: failed to speak the turn-failure notice", self.session_id)
             await self.set_state(State.LISTENING)
 
+    def spawn_detached(self, coro) -> asyncio.Task:
+        """Run something that must survive the turn being cancelled.
+
+        A barge-in cancels the whole turn task. A tool call in flight is
+        already writing to the database, so cancelling it mid-write would
+        leave the caller having made a commitment the system has no record of.
+        The task is tracked here and awaited during teardown; without that,
+        connection close would cancel it anyway and "the tool finishes" would
+        be a claim rather than a guarantee.
+        """
+        task = asyncio.create_task(coro)
+        self._detached.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._detached.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                # Retrieved deliberately: an unretrieved exception prints a
+                # warning from the event loop at some arbitrary later point,
+                # with no context about which call produced it.
+                log.error("call %s: detached tool task failed", self.session_id,
+                          exc_info=t.exception())
+
+        task.add_done_callback(_done)
+        return task
+
     async def set_state(self, state: State) -> None:
         self.state = state
         await self.transport.send_control({"type": "state", "state": state.value})
 
     def trim_history(self) -> None:
+        """Keep the system prompt and the most recent exchanges.
+
+        Walks back to a user message rather than slicing a fixed number off the
+        tail, so the window always opens on a caller turn and never starts
+        mid-exchange with an assistant reply to a question that is no longer
+        there.
+
+        Tool messages are deliberately never in history (see
+        pipeline._tool_exchange), which is what keeps this safe: a blind tail
+        slice would otherwise be free to separate a tool result from the
+        assistant message that requested it, and every provider rejects that.
+        """
         system = self.history[0]
         rest = self.history[1:]
-        max_msgs = self.cfg.llm.history_max_turns
-        if len(rest) > max_msgs:
-            rest = rest[-max_msgs:]
-        self.history = [system] + rest
+        max_exchanges = self.cfg.llm.history_max_turns
+
+        seen = 0
+        cut = 0
+        for i in range(len(rest) - 1, -1, -1):
+            if rest[i].get("role") == "user":
+                seen += 1
+                if seen == max_exchanges:
+                    # cut AT this user message, not after it: the window has to
+                    # begin with the caller turn that opens the exchange
+                    cut = i
+                    break
+        self.history = [system] + rest[cut:]

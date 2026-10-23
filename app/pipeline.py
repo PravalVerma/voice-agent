@@ -5,12 +5,16 @@ first sentence starts playing while the LLM is still generating later ones.
 """
 
 import asyncio
+import hashlib
+import json
 import logging
 import time
+from dataclasses import dataclass
 
-from . import compliance, tts_cache
+from . import compliance, mcp_client, tts_cache
 from .audio.frames import PIPELINE_SAMPLE_RATE, pcm_duration_s
 from .call_state import State
+from .providers.base import Done, ToolCall
 from .text.sentences import SentenceAssembler
 
 log = logging.getLogger("agent")
@@ -19,10 +23,160 @@ _SEND_CHUNK_MS = 500  # slice agent audio into <=500ms frames so playback can st
 _MIN_UTTERANCE_S = 0.3  # utterances shorter than this are almost certainly noise/clicks
 _SENTINEL = object()
 
+# A tool call that takes longer than this has already lost the caller's
+# patience: the filler line is roughly 1.5s of audio, so a longer budget buys
+# dead air after it rather than a result. Fail to a fixed line instead.
+_TOOL_TIMEOUT_S = 2.5
+# Don't speak "one moment" for a tool that returns in under this - a cached or
+# local lookup finishes faster than the filler would take to say.
+_FILLER_GRACE_S = 0.35
+
+
+@dataclass(frozen=True)
+class _Filler:
+    """A fixed line queued mid-turn, spoken from cache.
+
+    Distinct from a plain sentence so the consumer knows not to add it to the
+    reply: filler is not part of what the model said, and feeding it back would
+    teach the model that "one moment, let me check" is a thing it wrote.
+    """
+
+    text: str
+
 
 def _chunk_pcm(pcm: bytes, sample_rate: int, chunk_ms: int = _SEND_CHUNK_MS) -> list[bytes]:
     chunk_bytes = int(sample_rate * chunk_ms / 1000) * 2
     return [pcm[i : i + chunk_bytes] for i in range(0, len(pcm), chunk_bytes)]
+
+
+def _tools_for(session) -> list[dict]:
+    """Tool schemas for this turn, or [] when the call has no tool server.
+
+    The list never varies by bot. A per-bot subset would be a different prompt
+    per bot for no behavioural gain, since a disallowed tool is already
+    rejected at execution - see McpClient.call.
+    """
+    client = getattr(session, "mcp", None)
+    if client is None or not client.available:
+        return []
+    return client.schemas()
+
+
+def _tool_exchange(calls: list, results: list[dict]) -> list[dict]:
+    """The assistant/tool message pair for round two.
+
+    Built transiently and thrown away: these never enter session.history. That
+    keeps trim_history's tail slicing safe by construction rather than by a
+    careful rule the next edit forgets, and stops a stale tool result from
+    being replayed to the model four turns after it stopped being true.
+    """
+    return [
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": c.id, "type": "function",
+             "function": {"name": c.name, "arguments": c.arguments}}
+            for c in calls
+        ]},
+        *[
+            {"role": "tool", "tool_call_id": c.id, "name": c.name,
+             "content": mcp_client.truncate_result(r)}
+            for c, r in zip(calls, results)
+        ],
+        # Round two has to produce speech, not another tool call. The model can
+        # still emit one and it will be ignored, but asking plainly makes that
+        # much rarer - and a round that returns only a tool call leaves the
+        # caller having heard nothing but the filler.
+        {"role": "user", "content": "Tell the caller the outcome in one short sentence. Do not call a tool."},
+    ]
+
+
+def _result_key(session, call) -> str:
+    """Idempotency key, derived in code and never from the model.
+
+    A caller who barges in during a tool call usually did so *because* they
+    want the thing, so the model is likely to request it again next turn. The
+    first call may already have completed unheard. Replaying the stored result
+    stops a second write.
+
+    Different arguments are deliberately a different key: a promise of Rs 5,000
+    followed by one of Rs 5,500 is two genuine calls, not a duplicate.
+    """
+    try:
+        args = json.dumps(json.loads(call.arguments or "{}"), sort_keys=True)
+    except json.JSONDecodeError:
+        args = call.arguments or ""
+    raw = f"{session.session_id}|{call.name}|{args}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+async def _dispatch(session, turn_id: int, calls: list) -> list[dict]:
+    """Run every requested tool concurrently and return their results."""
+    async def one(call):
+        key = _result_key(session, call)
+        cached = session.tool_results.get(key)
+        if cached is not None:
+            log.info("turn %d: replaying %s (already run this call)", turn_id, call.name)
+            return cached
+        try:
+            args = json.loads(call.arguments or "{}")
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "arguments were not understood"}
+        session.call_logger.log_event({
+            "type": "tool_call", "turn_id": turn_id, "call_id": call.id,
+            "name": call.name, "args": args,
+        })
+        result = await session.mcp.call(call.name, args, timeout=_TOOL_TIMEOUT_S)
+        session.call_logger.log_event({
+            "type": "tool_result", "turn_id": turn_id, "call_id": call.id,
+            "name": call.name, "ok": bool(result.get("ok", True)), "result": result,
+        })
+        session.tool_results[key] = result
+        if session.flow is not None:
+            session.flow.note_tool_result(call.name, result)
+        return result
+
+    return list(await asyncio.gather(*(one(c) for c in calls)))
+
+
+async def _run_tool_phase(session, turn_id: int, queue, calls: list, timing: dict) -> list[dict]:
+    """Execute tools, covering the wait with a fixed filler line.
+
+    The task is detached and shielded so that a barge-in cancels *this turn*
+    without cancelling a tool that is already writing to the database. The
+    caller does not hear the result - the only consumer of it is this
+    coroutine, which is gone - but the write completes and the flow still
+    learns of it, because a commitment that was recorded is recorded whether or
+    not anyone heard the confirmation.
+    """
+    timing["tool_names"] = [c.name for c in calls]
+    task = session.spawn_detached(_dispatch(session, turn_id, calls))
+
+    # Give a fast tool a moment to finish before filling silence that is not
+    # there. With nothing spoken yet there is nothing covering the gap, so the
+    # filler goes out immediately instead.
+    grace = _FILLER_GRACE_S if session.spoken_anything else 0.0
+    done, _ = await asyncio.wait({task}, timeout=grace)
+    if not done:
+        await queue.put(_Filler(_script_line(session, "tool_filler")))
+
+    try:
+        results = await asyncio.wait_for(asyncio.shield(task), timeout=_TOOL_TIMEOUT_S)
+    except (asyncio.TimeoutError, Exception) as e:
+        if isinstance(e, asyncio.CancelledError):
+            raise
+        log.warning("turn %d: tool phase did not complete in time (%s)", turn_id, type(e).__name__)
+        await queue.put(_Filler(_script_line(session, "tool_failed")))
+        # No round two. Spending a request so the model can compose an apology
+        # we already have written is the most expensive way to say nothing.
+        return []
+
+    if all(r.get("ok") is False for r in results):
+        await queue.put(_Filler(_script_line(session, "tool_failed")))
+        return []
+    return results
+
+
+def _script_line(session, key: str) -> str:
+    return session.cfg.collections.script(session.cfg.stt.language, key)
 
 
 def _screen(session, sentence: str):
@@ -200,6 +354,14 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
     # Set once a sentence fails the outbound screen; the remainder of the turn
     # is then drained unspoken (see consumer()).
     blocked = False
+    # Whether any round has queued speech. A tool turn whose second round
+    # returns only another tool call would otherwise leave the caller with the
+    # filler line and then silence.
+    queued_text = False
+    # The last fixed line actually spoken this turn. A turn can end having said
+    # only fixed lines - a tool confirmation, or a failure notice - and history
+    # has to record what the caller heard, or the next turn reasons from a gap.
+    spoke_fixed: str | None = None
     # One question per turn, enforced in code rather than trusted to the prompt
     # alone - the model sometimes stacks multiple questions (or re-asks one
     # already answered) into a single reply. Once a sentence containing "?" has
@@ -207,41 +369,112 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
     # ever spoken.
     stop_after_question = False
 
-    async def producer() -> None:
-        nonlocal stop_after_question
+    async def _round(messages: list[dict], tools, *, execute_tools: bool = True) -> list:
+        """One LLM round. Queues sentences, returns any tool calls to execute.
+
+        `execute_tools` False still DECLARES the tools to the provider but
+        discards anything it asks for. That split exists because of a measured
+        gpt-oss behaviour: with no tools declared on a conversation that has
+        just used one, it emits a tool call anyway, Groq rejects the request
+        outright, and the retry fails every attempt - three requests spent to
+        produce nothing. Declaring the tools makes the request legal; ignoring
+        the result is what actually enforces one tool round-trip per turn.
+        """
+        nonlocal stop_after_question, queued_text
+        calls: list = []
+        # A fresh assembler per round. It has no reset(), and its _is_first flag
+        # is what lets the first sentence flush at any length - reusing the
+        # round-1 instance would make round 2's first sentence wait for 25
+        # characters, which is exactly the moment latency is most visible.
+        round_assembler = SentenceAssembler()
         llm_t0 = time.perf_counter()
         first_token = True
-        async for delta in session.llm.stream_chat(
-            session.history,
+        async for event in session.llm.stream_chat(
+            messages,
             max_tokens=session.cfg.llm.max_tokens,
             temperature=session.cfg.llm.temperature,
+            tools=tools,
         ):
+            if isinstance(event, ToolCall):
+                if execute_tools:
+                    calls.append(event)
+                else:
+                    log.info("turn %d: ignoring a second-round tool call to %s", turn_id, event.name)
+                continue
+            if isinstance(event, Done):
+                continue
             if stop_after_question:
-                break
+                # Keep draining rather than breaking. Breaking closes the async
+                # generator at its yield point, so a tool call the model emits
+                # after its question - gpt-oss usually puts text first - is
+                # thrown away without ever being seen.
+                continue
             if first_token:
-                timing["llm_ttft_ms"] = (time.perf_counter() - llm_t0) * 1000
+                timing.setdefault("llm_ttft_ms", (time.perf_counter() - llm_t0) * 1000)
                 first_token = False
-            for sentence in assembler.feed(delta):
+            for sentence in round_assembler.feed(event.text):
+                queued_text = True
                 await queue.put(sentence)
                 if "?" in sentence:
                     stop_after_question = True
                     break
-            if stop_after_question:
-                break
         if not stop_after_question:
-            tail = assembler.flush()
+            tail = round_assembler.flush()
             if tail:
+                queued_text = True
                 await queue.put(tail)
-        await queue.put(_SENTINEL)
+        return calls
+
+    async def producer() -> None:
+        try:
+            if session.llm.request_count >= session.cfg.llm.max_requests_per_call:
+                log.error("call %s: request ceiling (%d) reached - not calling the model again",
+                          session.session_id, session.cfg.llm.max_requests_per_call)
+                await queue.put(_Filler(_script_line(session, "tool_failed")))
+                return
+            tools = _tools_for(session)
+            calls = await _round(session.history, tools or None)
+            if calls and not blocked:
+                results = await _run_tool_phase(session, turn_id, queue, calls, timing)
+                if results:
+                    queued_text = False  # judge round two on its own output
+                    # Round two declares no tools. One tool round-trip per turn,
+                    # enforced by the parameter rather than by asking the prompt
+                    # nicely - this is the single biggest lever on the request
+                    # budget, and it is not left to the model's discretion.
+                    await _round(
+                        session.history + _tool_exchange(calls, results),
+                        tools or None,
+                        execute_tools=False,
+                    )
+                    if not queued_text:
+                        # The model answered with another tool call instead of
+                        # words. Say something fixed rather than leaving the
+                        # caller on a filler line followed by nothing.
+                        log.info("turn %d: round two produced no speech - using the fixed confirmation", turn_id)
+                        await queue.put(_Filler(_script_line(session, "tool_done")))
+        finally:
+            await queue.put(_SENTINEL)
 
     async def consumer() -> None:
-        nonlocal speaking_started, total_audio_s, blocked
+        nonlocal speaking_started, total_audio_s, blocked, spoke_fixed
         while True:
             sentence = await queue.get()
             if sentence is _SENTINEL:
                 break
             if blocked:
                 continue  # drain the queue; nothing more from this turn is spoken
+
+            if isinstance(sentence, _Filler):
+                # Fixed text: pre-approved, so it skips the screen, and kept out
+                # of reply_parts so it never reaches history.
+                if speaking_started is None:
+                    await session.set_state(State.SPEAKING)
+                    speaking_started = time.monotonic()
+                session.spoken_anything = True
+                spoke_fixed = sentence.text
+                total_audio_s += await _speak_text(session, turn_id, sentence.text, timing, cache=True)
+                continue
 
             decision = _screen(session, sentence)
             if decision is not None:
@@ -271,6 +504,7 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
                 await session.set_state(State.SPEAKING)
                 speaking_started = time.monotonic()
                 timing["e2e_first_audio_ms"] = (time.perf_counter() - t_turn0) * 1000
+            session.spoken_anything = True
             total_audio_s += await _speak_text(session, turn_id, sentence, timing)
 
     try:
@@ -303,10 +537,20 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
         # leaving the turn out entirely reads to the model as "my last reply was
         # never delivered", and it tends to say the blocked thing again.
         session.history.append({"role": "assistant", "content": _recovery_line(session)})
+    elif spoke_fixed:
+        session.history.append({"role": "assistant", "content": spoke_fixed})
     else:
-        log.warning("turn %d: LLM produced no text", turn_id)
+        log.warning("turn %d: the model produced no text", turn_id)
 
     if session.llm.last_usage:
+        prompt_tokens = session.llm.last_usage.input_tokens
+        session.call_logger.log_event({
+            "type": "prompt_tokens", "turn_id": turn_id, "tokens": prompt_tokens,
+            "requests_so_far": session.llm.request_count,
+        })
+        if prompt_tokens > session.cfg.llm.warn_prompt_tokens:
+            log.warning("turn %d: prompt was %d tokens (warn above %d)",
+                        turn_id, prompt_tokens, session.cfg.llm.warn_prompt_tokens)
         timing["llm_input_tokens"] = session.llm.last_usage.input_tokens
         timing["llm_output_tokens"] = session.llm.last_usage.output_tokens
         timing["llm_cached_tokens"] = session.llm.last_usage.cached_tokens
@@ -317,7 +561,7 @@ async def run_agent_turn(session, turn_id: int, utterance_pcm: bytes,
         )
     session.call_logger.log_event(
         {"type": "agent_turn", "turn_id": turn_id,
-         "text": reply_text or (_recovery_line(session) if blocked else ""),
+         "text": reply_text or (_recovery_line(session) if blocked else (spoke_fixed or "")),
          "interrupted": False, "blocked": blocked}
     )
 

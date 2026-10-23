@@ -1,5 +1,6 @@
 """FastAPI app: serves the browser demo and the /ws call endpoint."""
 
+import asyncio
 import datetime
 import logging
 import os
@@ -19,6 +20,7 @@ from .audio.vad import SileroVAD, SpeechEnd, SpeechStart, VADGate
 from .config import ROOT, apply_language, build_call_vars, get_config, missing_secrets
 from .db import init_db
 from .live_session import run_live_call
+from .mcp_client import McpClient
 from .providers import build_llm, build_stt, build_tts
 from .recording import CallRecorder
 from .session import CallSession
@@ -55,6 +57,22 @@ async def startup() -> None:
     )
     for problem in missing_secrets(cfg):
         log.warning("credentials: %s — calls will fail until this is fixed", problem)
+    # Tool schemas are identical for every bot and every call, so they are
+    # listed once per process. Fire-and-forget: a missing collections extra
+    # must not stop the server booting for the assistant bots that don't need
+    # it, and a collections call refuses cleanly later if this never succeeded.
+    asyncio.create_task(_warm_tools())
+
+
+async def _warm_tools() -> None:
+    try:
+        schemas = await McpClient.warm()
+        if schemas:
+            log.info("tool server ready: %d tools", len(schemas))
+        else:
+            log.info("tool server unavailable - collections bots will run without tools")
+    except Exception as e:
+        log.info("tool server unavailable (%s) - collections bots will run without tools", e)
 
 
 def _serve_protected_page(request: Request, filename: str) -> Response:
@@ -753,6 +771,18 @@ async def run_call(
         flow = CollectionsFlow(cfg, customer) if customer else None
         session = CallSession(transport, cfg, stt, llm, tts, user_id=user_id,
                               username=username, flow=flow)
+        if customer:
+            # Spawned here, alongside the providers, so the ~300ms process
+            # start lands inside the setup window the caller is already waiting
+            # through rather than in the middle of a turn.
+            session.mcp = McpClient(
+                customer["id"], session.session_id,
+                allowed=bots_store.get_tool_allowlist(bot_id),
+            )
+            await session.mcp.connect()
+            if not session.mcp.available:
+                log.warning("call %s: no tool server - the agent will talk but cannot act",
+                            session.session_id)
     except Exception as e:  # unknown provider, bad SDK creds, VAD/log setup failure, etc.
         log.exception("failed to set up the call")
         await transport.send_control({"type": "error", "message": f"call setup failed: {e}"})

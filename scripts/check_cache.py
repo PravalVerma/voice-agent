@@ -43,7 +43,7 @@ async def _probe(llm, prefix: str, tail: str) -> tuple[int, int]:
         {"role": "user", "content": tail},
     ]
     async for _ in llm.stream_chat(messages, max_tokens=8, temperature=0.0):
-        pass
+        pass  # events are irrelevant here; only usage is being measured
     if llm.last_usage is None:
         return 0, 0
     return llm.last_usage.input_tokens, llm.last_usage.cached_tokens

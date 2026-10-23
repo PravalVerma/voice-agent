@@ -5,6 +5,8 @@ language or voice gender. Every bot supports every pipeline (standard/gemini_liv
 which one runs is a separate per-call choice (see config.apply_language), not
 a bot property."""
 
+import json
+
 from .db import get_connection
 
 DEFAULT_BOT_PROMPT = """You are a friendly and concise voice assistant on a phone call.
@@ -130,6 +132,68 @@ def resolve_prompt_for_call(bot_id: int | None, language_code: str) -> str:
     if bot is None:
         return DEFAULT_BOT_PROMPT
     return get_prompt(bot["id"], language_code) or DEFAULT_BOT_PROMPT
+
+
+def get_tool_allowlist(bot_id: int | None) -> list[str] | None:
+    """Tools this bot may execute, or None when every tool is allowed.
+
+    None rather than the full list, matching user_bots.allowed_tiers: a tool
+    added later is then allowed automatically instead of being silently
+    excluded because it postdates when the row was saved.
+
+    This gates EXECUTION only. The schemas sent to the model never vary by bot
+    - see pipeline._tools_for.
+    """
+    if bot_id is None:
+        return None
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT allowed FROM bot_tools WHERE bot_id = ?", (bot_id,)).fetchone()
+    finally:
+        conn.close()
+    if row is None or not row["allowed"]:
+        return None
+    try:
+        decoded = json.loads(row["allowed"])
+    except json.JSONDecodeError:
+        return None
+    return decoded or None
+
+
+def set_tool_allowlist(bot_id: int, allowed: list[str] | None) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO bot_tools (bot_id, allowed) VALUES (?, ?) "
+            "ON CONFLICT(bot_id) DO UPDATE SET allowed = excluded.allowed",
+            (bot_id, json.dumps(allowed) if allowed else None),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_mode(bot_id: int | None) -> str:
+    """'assistant' (the default) or 'collections'."""
+    if bot_id is None:
+        return "assistant"
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT mode FROM bots WHERE id = ?", (bot_id,)).fetchone()
+    finally:
+        conn.close()
+    return (row["mode"] if row is not None else "assistant") or "assistant"
+
+
+def set_mode(bot_id: int, mode: str) -> None:
+    if mode not in ("assistant", "collections"):
+        raise ValueError(f"unknown bot mode {mode!r}")
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE bots SET mode = ? WHERE id = ?", (mode, bot_id))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def migrate_legacy_base_prompt_if_needed(language_codes: list[str]) -> None:

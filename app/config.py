@@ -39,7 +39,14 @@ class LLMConfig(BaseModel):
     model: str = "openai/gpt-oss-20b"
     max_tokens: int = Field(200, ge=1)
     temperature: float = Field(0.6, ge=0.0, le=2.0)
-    history_max_turns: int = Field(12, ge=2)
+    #: exchanges (caller turn + reply), not messages - see trim_history
+    history_max_turns: int = Field(4, ge=1)
+    #: hard ceiling on LLM requests per call. A runaway tool loop or a retry
+    #: storm would otherwise spend the daily cap on one call; past this the
+    #: agent speaks a fixed line instead of asking the model again.
+    max_requests_per_call: int = Field(10, ge=1)
+    #: log a warning above this many prompt tokens in one request
+    warn_prompt_tokens: int = Field(1000, ge=1)
 
 
 class TTSConfig(BaseModel):

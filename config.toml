@@ -97,7 +97,18 @@ max_tokens = 400             # short answers: better latency, cost, and phone-ca
                               # mid-sentence cut-offs ever reappear in an Indic language, raise this
                               # first before suspecting anything else.
 temperature = 0.6
-history_max_turns = 12       # user+assistant messages kept in context (system prompt always kept)
+max_requests_per_call = 10   # a complete collections call should use well under this;
+                              # the ceiling exists to stop a runaway tool loop or a
+                              # retry storm spending the daily cap on a single call
+warn_prompt_tokens = 1000    # per-request prompt size that warrants a log warning
+history_max_turns = 4        # EXCHANGES (a caller turn plus the reply to it) kept in
+                              # context, not individual messages - trim_history walks
+                              # back to a user message so the window never opens
+                              # mid-exchange. Was 12 messages; 4 exchanges is roughly
+                              # the same span of conversation but holds the per-turn
+                              # payload down, which is the only budget lever that
+                              # still works now that prompt caching is known not to
+                              # apply on this tier (see scripts/check_cache.py).
 
 [tts]
 provider = "google"          # google
@@ -294,6 +305,14 @@ optout_ack = "Understood. I have recorded that you do not want further calls, an
 # would be worse than saying nothing.
 distress = "I am sorry you are going through this, and thank you for telling me. This is an automated line, so I cannot connect you to a person right now. If you would like to talk to someone, Tele-MANAS is available free on 14416, at any hour. I will close this call here and nobody will call you back about the account today."
 close = "Thank you for your time. Goodbye."
+# Spoken while a tool runs, and if one fails. Both are cached, so they add no
+# latency of their own - which is the entire point of having them.
+tool_filler = "One moment, let me check that."
+tool_failed = "I am not able to check that right now, but I have made a note of it."
+# Spoken when the model answers a completed tool with another tool call rather
+# than words. Deliberately carries no figures, so it is safe to say after any
+# tool without needing to clear the outbound screen.
+tool_done = "That is recorded, thank you."
 
 [collections.scripts.hi]
 greeting = "नमस्ते, क्या मैं {customer} से बात कर रही हूँ? मैं {lender} की ओर से एक automated assistant बोल रही हूँ, और यह call record की जा रही है।"
@@ -306,3 +325,6 @@ third_party = "कोई बात नहीं। मैं किसी और
 optout_ack = "समझ गई। मैंने record कर लिया है कि आप आगे calls नहीं चाहते, अब आपको दोबारा contact नहीं किया जाएगा। धन्यवाद।"
 distress = "मुझे खेद है कि आप इस दौर से गुज़र रहे हैं, और बताने के लिए धन्यवाद। यह एक automated line है, इसलिए मैं आपको अभी किसी व्यक्ति से नहीं जोड़ सकती। अगर आप किसी से बात करना चाहें, तो Tele-MANAS किसी भी समय 14416 पर निःशुल्क उपलब्ध है। मैं यह call यहीं बंद कर रही हूँ और आज account के बारे में कोई आपको call नहीं करेगा।"
 close = "आपके समय के लिए धन्यवाद। नमस्ते।"
+tool_filler = "एक मिनट, मैं अभी check करती हूँ।"
+tool_failed = "मैं अभी यह check नहीं कर पा रही हूँ, लेकिन मैंने note कर लिया है।"
+tool_done = "यह record हो गया है, धन्यवाद।"

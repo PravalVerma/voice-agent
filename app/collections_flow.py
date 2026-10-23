@@ -114,6 +114,9 @@ class CollectionsFlow:
         self.verified = False
         self.disposition = "incomplete"
         self.ending = False
+        self.offers_made: list[str] = []
+        self.commitments: list[dict] = []
+        self.flags_raised: list[str] = []
 
     # ---- helpers --------------------------------------------------------------
 
@@ -180,6 +183,7 @@ class CollectionsFlow:
 
         flags = compliance.screen_inbound(text, self.language, cfg=self.cfg)
         for f in flags:
+            self.flags_raised.append(f.code)
             session.call_logger.log_event({
                 "type": "compliance_flag", "turn_id": turn_id, "code": f.code,
                 "severity": f.severity, "evidence": f.evidence, "stage": self.stage.value,
@@ -265,6 +269,50 @@ class CollectionsFlow:
             await self._end(session, "verification_failed")
             return
         await self._say(session, "verify_retry", Stage.VERIFY.value)
+
+    def note_tool_result(self, name: str, result: dict) -> None:
+        """Record what a tool actually did, for the running state summary.
+
+        Called from the tool dispatch rather than from the model's reply, so
+        the state reflects what was written to the database and not what the
+        model said it was going to do. It is also called for a tool that
+        completed after a barge-in, whose confirmation the caller never heard -
+        the commitment exists either way, and the next turn has to know that.
+        """
+        if not result.get("ok", True):
+            return
+        if name == "verify_identity" and result.get("verified"):
+            self.verified = True
+        elif name == "record_promise_to_pay":
+            self.commitments.append({"date": result.get("date"), "amount": result.get("amount_rupees")})
+            self.disposition = "promise_to_pay"
+        elif name == "register_opt_out":
+            self.disposition = "opt_out"
+        elif name == "log_dispute":
+            self.disposition = "dispute"
+        elif name == "end_call":
+            self.disposition = result.get("disposition", self.disposition)
+            self.ending = True
+
+    def state_summary(self) -> str:
+        """One line of call state, maintained in code and never by a model.
+
+        This is what lets a four-exchange window be enough: the facts that must
+        outlive the window are exactly the ones a tool wrote down. Each list is
+        truncated so a ten-minute call cannot grow this without bound.
+        """
+        parts = [
+            f"stage={self.stage.value}",
+            f"verified={'yes' if self.verified else 'no'}",
+        ]
+        if self.offers_made:
+            parts.append("offers=" + ",".join(self.offers_made[-3:]))
+        if self.commitments:
+            last = self.commitments[-1]
+            parts.append(f"committed={last.get('amount')}@{last.get('date')}")
+        if self.flags_raised:
+            parts.append("flags=" + ",".join(sorted(set(self.flags_raised))[-3:]))
+        return "[STATE] " + " ".join(parts)
 
     def _account_line(self) -> str:
         """The compact account block, injected once after verification."""

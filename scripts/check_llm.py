@@ -10,6 +10,7 @@ import time
 from _bootstrap import build_or_die, load_config_or_die, need_env
 
 from app.providers import build_llm
+from app.providers.base import TextDelta, ToolCall
 
 
 async def main() -> None:
@@ -38,13 +39,18 @@ async def main() -> None:
     t0 = time.perf_counter()
     ttft_ms = None
     n_chars = 0
-    async for delta in llm.stream_chat(
+    async for event in llm.stream_chat(
         messages, max_tokens=cfg.llm.max_tokens, temperature=cfg.llm.temperature
     ):
+        if isinstance(event, ToolCall):
+            print(f"\n[tool call] {event.name}({event.arguments})", flush=True)
+            continue
+        if not isinstance(event, TextDelta):
+            continue  # Done
         if ttft_ms is None:
             ttft_ms = (time.perf_counter() - t0) * 1000
-        n_chars += len(delta)
-        print(delta, end="", flush=True)
+        n_chars += len(event.text)
+        print(event.text, end="", flush=True)
     total_ms = (time.perf_counter() - t0) * 1000
 
     print()
