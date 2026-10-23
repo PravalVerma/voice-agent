@@ -20,6 +20,8 @@ dependencies = [
     # before every collections call - a missing tz database there would raise
     # mid-call, so this is a main dependency and not an extra.
     "tzdata",
+    "edge-tts>=7.3.1",
+    "av>=18.0.0",
 ]
 
 [project.optional-dependencies]

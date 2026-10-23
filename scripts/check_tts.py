@@ -5,6 +5,7 @@ Usage: uv run python scripts/check_tts.py "Hello there, how are you today?" [--o
 
 import argparse
 import asyncio
+import sys
 import time
 from pathlib import Path
 
@@ -26,7 +27,13 @@ async def main() -> None:
 
     tts = build_or_die(build_tts, cfg)
     t0 = time.perf_counter()
-    pcm = await tts.synthesize(args.text)
+    try:
+        pcm = await tts.synthesize(args.text)
+    except Exception as e:
+        # One clear line, like every other failure these scripts report.
+        # A provider that cannot reach its endpoint is the expected case
+        # here, and a traceback buries which of the four it was.
+        sys.exit(f"error: speech synthesis failed - {type(e).__name__}: {e}")
     dt = (time.perf_counter() - t0) * 1000
 
     out = Path(args.out)

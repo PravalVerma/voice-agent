@@ -49,11 +49,37 @@ class LLMConfig(BaseModel):
     warn_prompt_tokens: int = Field(1000, ge=1)
 
 
+class EdgeVoicePair(BaseModel):
+    """The voice to use for each gender in one language."""
+    female: str
+    male: str
+
+
+class EdgeConfig(BaseModel):
+    """Settings for the edge provider. Kept provider-shaped rather than folded
+    into [tts] so a paid replacement can add its own block beside this one and
+    be selected by `provider` alone."""
+    #: per-language gender -> voice, keyed by language code ("en", "hi")
+    voices: dict[str, EdgeVoicePair] = {}
+    #: give up on one request after this long and speak the fallback line
+    timeout_s: float = Field(10.0, gt=0)
+    #: consecutive failures before synthesis is paused rather than retried
+    failure_threshold: int = Field(3, ge=1)
+    #: how long that pause lasts before one request is let through to re-test
+    cooldown_s: float = Field(60.0, gt=0)
+
+
 class TTSConfig(BaseModel):
     provider: str = "google"
     voice: str = "en-IN-Neural2-A"
+    #: the Voice Quality tier this call resolved to, set by apply_language().
+    #: Carried here so CallLogger can label the call without re-deriving the
+    #: tier by pattern-matching the voice name, which only ever worked for one
+    #: provider's naming scheme.
+    tier: str = "cascaded"
     speaking_rate: float = Field(1.0, gt=0.25, lt=4.0)
     sample_rate: int = 24000
+    edge: EdgeConfig = EdgeConfig()
 
     @property
     def language_code(self) -> str:

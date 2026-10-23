@@ -37,12 +37,13 @@ class _Transport(AudioTransport):
         self.in_sample_rate = 16000
         self.out_sample_rate = 24000
         self.spoken: list[str] = []
+        self.audio: list[bytes] = []
 
     async def recv(self):
         raise NotImplementedError("not used in this offline check")
 
     async def send_audio(self, turn_id, pcm):
-        pass
+        self.audio.append(pcm)
 
     async def send_control(self, data):
         if data["type"] == "agent_text":
@@ -55,8 +56,27 @@ class _Transport(AudioTransport):
 class _TTS:
     sample_rate = 24000
 
+    # Mirrors TTSProvider: returns the whole utterance at once, so these
+    # checks exercise the non-streaming branch of _speak_text. The
+    # streaming branch is covered by _TTSStreaming below.
+    def supports_streaming(self):
+        return False
+
     async def synthesize(self, text):
         return b"\x00\x00" * 600
+
+
+class _TTSStreaming(_TTS):
+    """A streaming provider whose pieces do not line up with the 500 ms send
+    frame - the case where _speak_text's re-chunking buffer has to carry a
+    partial frame across iterations."""
+
+    def supports_streaming(self):
+        return True
+
+    async def synthesize_stream(self, text):
+        for _ in range(30):
+            yield bytes(1700)
 
 
 def _session(cfg, llm, **kw):
@@ -349,6 +369,39 @@ def check_mcp_error_flag(cfg) -> None:
     check("a successful tool still parses", fine.get("ok") is True, str(fine))
 
 
+def check_streaming_send(cfg) -> None:
+    """A streaming provider must deliver every byte, re-framed, not dropped.
+
+    _speak_text buffers partial frames across iterations, so a piece that does
+    not divide evenly into the 500 ms send frame leaves a remainder. Dropping
+    that remainder clips the end of every sentence by a few milliseconds -
+    inaudible on one line, and a progressively worse stutter as a call goes on.
+    Reported duration must match the bytes actually sent, since the server
+    sleeps on it before listening again.
+    """
+    import asyncio
+
+    from app import pipeline
+
+    session = _session(cfg, None)
+    session.tts = _TTSStreaming()
+    timing: dict = {}
+    duration = asyncio.run(pipeline._speak_text(session, 1, "hello there", timing))
+    sent = b"".join(session.transport.audio)
+    expected = 30 * 1700
+    check("streaming send loses no bytes", len(sent) == expected,
+          f"{len(sent)} of {expected}")
+    check("streaming duration matches the bytes sent",
+          abs(duration - len(sent) / 2 / session.tts.sample_rate) < 1e-9)
+    check("streaming records first-audio latency", "tts_first_ms" in timing)
+    frame = int(session.tts.sample_rate * pipeline._SEND_CHUNK_MS / 1000) * 2
+    check("streaming frames respect the send chunk size",
+          all(len(c) <= frame for c in session.transport.audio))
+    check("streaming exercises both a full frame and a remainder",
+          any(len(c) == frame for c in session.transport.audio)
+          and any(len(c) < frame for c in session.transport.audio))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--verbose", action="store_true", help="show detail for passing checks too")
@@ -365,6 +418,7 @@ def main() -> None:
         check_round_two_shape,
         check_round_two_speaks,
         check_mcp_error_flag,
+        check_streaming_send,
     ):
         try:
             fn(cfg)

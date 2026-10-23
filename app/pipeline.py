@@ -227,20 +227,42 @@ async def _speak_text(session, turn_id: int, text: str, timing: dict, *, cache: 
     """
     t0 = time.perf_counter()
     hit = False
+    rate = session.tts.sample_rate
     if cache:
         pcm, hit = await tts_cache.synthesize_cached(
             session.tts, text,
             voice=session.cfg.tts.voice,
             speaking_rate=session.cfg.tts.speaking_rate,
-            sample_rate=session.tts.sample_rate,
+            sample_rate=rate,
         )
+        timing.setdefault("tts_first_ms", (time.perf_counter() - t0) * 1000)
+        for chunk in _chunk_pcm(pcm, rate):
+            await session.transport.send_audio(turn_id, chunk)
+        total_bytes = len(pcm)
+    elif session.tts.supports_streaming():
+        # Send each slice as it decodes rather than waiting for the sentence to
+        # finish. On a provider whose first byte costs more than the rest of the
+        # utterance put together, this is most of the perceived latency.
+        total_bytes = 0
+        pending = bytearray()
+        frame_bytes = int(rate * _SEND_CHUNK_MS / 1000) * 2
+        async for piece in session.tts.synthesize_stream(text):
+            timing.setdefault("tts_first_ms", (time.perf_counter() - t0) * 1000)
+            total_bytes += len(piece)
+            pending += piece
+            while len(pending) >= frame_bytes:
+                await session.transport.send_audio(turn_id, bytes(pending[:frame_bytes]))
+                del pending[:frame_bytes]
+        if pending:
+            await session.transport.send_audio(turn_id, bytes(pending))
     else:
         pcm = await session.tts.synthesize(text)
-    timing.setdefault("tts_first_ms", (time.perf_counter() - t0) * 1000)
-    for chunk in _chunk_pcm(pcm, session.tts.sample_rate):
-        await session.transport.send_audio(turn_id, chunk)
+        timing.setdefault("tts_first_ms", (time.perf_counter() - t0) * 1000)
+        for chunk in _chunk_pcm(pcm, rate):
+            await session.transport.send_audio(turn_id, chunk)
+        total_bytes = len(pcm)
     await session.transport.send_control({"type": "agent_text", "turn_id": turn_id, "text": text})
-    duration_s = pcm_duration_s(pcm, session.tts.sample_rate)
+    duration_s = total_bytes / 2 / rate
     # A cache hit made no request, so it bills no characters. Counting them
     # anyway would quietly inflate every call's cost estimate by the length of
     # the fixed script, which is the one part that is genuinely free.

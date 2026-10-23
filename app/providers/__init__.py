@@ -68,4 +68,16 @@ def build_tts(cfg: AppConfig) -> TTSProvider:
         # locale-prefixed Google Cloud TTS name - apply_language() sets it
         # accordingly for a gemini-pipeline bot.
         return GeminiTTS(voice_name=cfg.tts.voice)
-    raise ConfigError(f"unknown tts.provider '{p}' (valid: google, gemini)")
+    if p == "edge":
+        from .tts_edge import EdgeTTS
+
+        e = cfg.tts.edge
+        return EdgeTTS(
+            voice=cfg.tts.voice,
+            speaking_rate=cfg.tts.speaking_rate,
+            sample_rate=cfg.tts.sample_rate,
+            timeout_s=e.timeout_s,
+            failure_threshold=e.failure_threshold,
+            cooldown_s=e.cooldown_s,
+        )
+    raise ConfigError(f"unknown tts.provider '{p}' (valid: google, gemini, edge)")

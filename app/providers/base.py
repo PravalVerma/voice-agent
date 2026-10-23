@@ -94,3 +94,19 @@ class TTSProvider(ABC):
     @abstractmethod
     async def synthesize(self, text: str) -> bytes:
         """Synthesize text to headerless PCM16 mono at self.sample_rate."""
+
+    def supports_streaming(self) -> bool:
+        """True if synthesize_stream() yields audio before the whole sentence is
+        ready. Opt-in: a provider whose API is a single unary request (Google
+        Cloud TTS, Gemini REST) gains nothing from the streaming path and keeps
+        the simpler one."""
+        return False
+
+    async def synthesize_stream(self, text: str) -> AsyncIterator[bytes]:
+        """Same audio as synthesize(), yielded in order as it becomes available.
+
+        The default is the whole utterance in one chunk, so every provider
+        satisfies this contract without implementing it - callers can branch on
+        supports_streaming() for latency and still work either way.
+        """
+        yield await self.synthesize(text)
